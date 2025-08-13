@@ -1,0 +1,15 @@
+fastapi
+uvicorn
+python-multipart
+jinja2
+speechrecognition
+sqlalchemy
+opencv-python
+mediapipe
+numpy
+librosa
+reportlab
+sentence-transformers
+textblob
+face_recognition
+ultralytics
