@@ -15,6 +15,7 @@ from sqlalchemy import create_engine, Column, Integer, String, DateTime, Float
 from sqlalchemy.orm import declarative_base, sessionmaker
 import datetime as dt
 import cv2
+import json
 import mediapipe as mp
 import math
 import numpy as np
@@ -350,7 +351,7 @@ async def upload_video(
 
 class ScreenshotData(BaseModel):
     image_base64: str
-    
+
 @app.post("/save_screenshot")
 async def save_screenshot(file: UploadFile = File(...)):
     # File ka naam banate hain
@@ -367,17 +368,29 @@ async def save_screenshot(file: UploadFile = File(...)):
         "file_path": file_path
     }
 
-
+connected_clients = []
 
 @app.websocket("/cheating_status")
-async def cheating_status_socket(websocket: WebSocket):
-    await websocket.accept()
+async def websocket_endpoint(ws: WebSocket):
+    await ws.accept()
+    connected_clients.append(ws)
     try:
         while True:
-            await websocket.send_json({"cheating": cheating_flag["cheating"]})
-            await asyncio.sleep(1)
-    except WebSocketDisconnect:
-        print("WebSocket client disconnected")
+            await asyncio.sleep(1)  # keep connection alive
+    except:
+        pass
+    finally:
+        connected_clients.remove(ws)
+
+# @app.websocket("/cheating_status")
+# async def cheating_status_socket(websocket: WebSocket):
+#     await websocket.accept()
+#     try:
+#         while True:
+#             await websocket.send_json({"cheating": cheating_flag["cheating"]})
+#             await asyncio.sleep(1)
+#     except WebSocketDisconnect:
+#         print("WebSocket client disconnected")
 
 @app.get("/export_pdf")
 async def export_pdf(session_id: str = Query(...)):
@@ -457,23 +470,29 @@ def get_face_bounding_rect(landmarks, img_width, img_height):
     ymin, ymax = min(y_coords), max(y_coords)
     return xmin, ymin, xmax, ymax
 # Camera feed generator with cheating detection and random screenshots
+# Extra global tracking variables
+
+cheating_frame_count = 0
+device_frame_count = 0
+required_consecutive_frames = 3  # 3 consecutive frames trigger stop
+reference_encoding = None  # first person's face encoding
+
 def generate_camera_frames():
-    global cheating_flag, stop_camera_flag
+    global cheating_flag, stop_camera_flag, cheating_frame_count, device_frame_count, reference_encoding
 
     cap = cv2.VideoCapture(0)
     face_mesh_local = mp_face_mesh.FaceMesh(static_image_mode=False, max_num_faces=5, refine_landmarks=True)
 
     os.makedirs("screenshots", exist_ok=True)
+    os.makedirs("logs", exist_ok=True)
 
     last_screenshot_time = 0
-    next_screenshot_interval = random.randint(5, 10)  # seconds
-
+    next_screenshot_interval = random.randint(5, 10)
     show_warning = False
     warning_start_time = 0
-    WARNING_DURATION = 3  # seconds
+    WARNING_DURATION = 3
     warning_text = ""
 
-    ref_enc = load_reference_encoding()
     screenshot_taken_at_start = False
 
     while not stop_camera_flag.is_set():
@@ -485,104 +504,287 @@ def generate_camera_frames():
         img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         results = face_mesh_local.process(img_rgb)
 
-        if not screenshot_taken_at_start:
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filepath = f"screenshots/screenshot_{timestamp}_start.jpg"
-            cv2.imwrite(filepath, frame)
-            warning_text = "📸 Interview Started – Screenshot Taken!"
-            show_warning = True
-            warning_start_time = current_time
-            screenshot_taken_at_start = True
-
-        cheating_detected = False
-        cheating_warning_text = ""
-
         num_faces = len(results.multi_face_landmarks) if results.multi_face_landmarks else 0
 
-        if num_faces > 1:
-            cheating_detected = True
-            cheating_warning_text = "⚠ Cheating Detected: Multiple persons!"
-        elif num_faces == 1:
-            if ref_enc is None:
-                cheating_warning_text = "ℹ Upload reference image for authentication"
-            else:
-                small_frame = cv2.resize(frame, (0, 0), fx=0.25, fy=0.25)
-                rgb_small_frame = cv2.cvtColor(small_frame, cv2.COLOR_BGR2RGB)
-                face_encs = face_recognition.face_encodings(rgb_small_frame)
-                if face_encs:
-                    match = face_recognition.compare_faces([ref_enc], face_encs[0], tolerance=0.5)
-                    if not match[0]:
-                        cheating_detected = True
-                        cheating_warning_text = "⚠ Cheating Detected: Unauthorized candidate!"
-                else:
-                    cheating_warning_text = "⚠ Face encoding not found"
-        else:
-            cheating_warning_text = "⚠ No face detected!"
-
-        device_detected = False
-        device_name = ""
-        if yolo_model:
-            try:
-                yolo_results = yolo_model(frame)
-                for r in yolo_results:
-                    boxes = r.boxes
-                    for box in boxes:
-                        cls_id = int(box.cls.cpu())
-                        cls_name = yolo_model.names.get(cls_id, "").lower()
-                        if cls_name in ["cell phone", "cellphone", "phone", "laptop", "tv", "tablet"]:
-                            device_detected = True
-                            device_name = cls_name
-                            cheating_warning_text = f"⚠ Cheating Detected: Electronic device - {cls_name}"
-                            break
-                    if device_detected:
-                        break
-            except Exception:
-                pass
-
-        take_screenshot = False
-
-        if cheating_detected or device_detected:
-            take_screenshot = True
-            warning_text = cheating_warning_text
-            cheating_flag["cheating"] = True  # 🔴 set flag to True
-        else:
-            cheating_flag["cheating"] = False  # ✅ no cheating
-
-        if not take_screenshot and (current_time - last_screenshot_time > next_screenshot_interval):
-            take_screenshot = True
-            warning_text = "📸 Screenshot Taken!"
-
-        if take_screenshot:
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filepath = f"screenshots/screenshot_{timestamp}.jpg"
-            cv2.imwrite(filepath, frame)
-            last_screenshot_time = current_time
-            next_screenshot_interval = random.randint(5, 10)
-            show_warning = True
-            warning_start_time = current_time
-
-        if show_warning and (current_time - warning_start_time > WARNING_DURATION):
-            show_warning = False
-            warning_text = ""
-
+        # Draw rectangles around all faces
         if results.multi_face_landmarks:
             h, w, _ = frame.shape
             for face_landmarks in results.multi_face_landmarks:
                 xmin, ymin, xmax, ymax = get_face_bounding_rect(face_landmarks, w, h)
                 cv2.rectangle(frame, (xmin, ymin), (xmax, ymax), (0, 255, 0), 2)
 
+        # First screenshot & reference encoding
+        if not screenshot_taken_at_start and num_faces == 1:
+            face_landmarks = results.multi_face_landmarks[0]
+            xmin, ymin, xmax, ymax = get_face_bounding_rect(face_landmarks, w, h)
+            face_img = frame[ymin:ymax, xmin:xmax]
+            face_rgb = cv2.cvtColor(face_img, cv2.COLOR_BGR2RGB)
+            encodings = face_recognition.face_encodings(face_rgb)
+            if encodings:
+                reference_encoding = encodings[0]
+                screenshot_taken_at_start = True
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                cv2.imwrite(f"screenshots/screenshot_{timestamp}_reference.jpg", frame)
+                warning_text = "📸 Reference snapshot taken"
+                show_warning = True
+                warning_start_time = current_time
+
+        cheating_detected = False
+        cheating_warning_text = ""
+        device_detected = False
+
+        # Multiple faces detection
+        if num_faces > 1:
+            cheating_frame_count += 1
+            if cheating_frame_count >= required_consecutive_frames:
+                cheating_detected = True
+                cheating_warning_text = "⚠ Multiple persons detected!"
+        else:
+            cheating_frame_count = 0
+
+        # Face verification
+        if num_faces == 1 and reference_encoding is not None:
+            face_landmarks = results.multi_face_landmarks[0]
+            xmin, ymin, xmax, ymax = get_face_bounding_rect(face_landmarks, w, h)
+            face_img = frame[ymin:ymax, xmin:xmax]
+            face_rgb = cv2.cvtColor(face_img, cv2.COLOR_BGR2RGB)
+            encodings = face_recognition.face_encodings(face_rgb)
+            if encodings:
+                match = face_recognition.compare_faces([reference_encoding], encodings[0], tolerance=0.5)
+                if not match[0]:
+                    cheating_detected = True
+                    cheating_warning_text = "⚠ Person changed! Unauthorized!"
+            else:
+                cheating_warning_text = "⚠ Face encoding not found"
+        elif num_faces == 0:
+            cheating_warning_text = "⚠ No face detected!"
+
+        # Electronic device detection
+        if yolo_model:
+            try:
+                yolo_results = yolo_model(frame)
+                for r in yolo_results:
+                    for box in r.boxes:
+                        cls_id = int(box.cls.cpu())
+                        conf = float(box.conf.cpu())
+                        cls_name = yolo_model.names.get(cls_id, "").lower()
+                        if conf > 0.6 and cls_name in ["cell phone", "cellphone", "phone", "laptop", "tv", "tablet"]:
+                            device_frame_count += 1
+                            if device_frame_count >= required_consecutive_frames:
+                                device_detected = True
+                                cheating_warning_text = f"⚠ Device detected: {cls_name}"
+                            break
+                if not device_detected:
+                    device_frame_count = 0
+            except Exception:
+                pass
+
+        # Cheating triggered
+        # if cheating_detected or device_detected:
+        #     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        #     cv2.imwrite(f"screenshots/screenshot_{timestamp}_cheating.jpg", frame)
+        #     warning_text = cheating_warning_text
+        #     cheating_flag["cheating"] = True
+        #     log_event(f"{cheating_warning_text} - Camera Stopped & Screenshot Taken")
+        #     stop_camera_flag.set()
+        #     break
+        if cheating_detected or device_detected:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            cv2.imwrite(f"screenshots/screenshot_{timestamp}_cheating.jpg", frame)
+            warning_text = cheating_warning_text
+            cheating_flag["cheating"] = True
+            log_event(f"{cheating_warning_text} - Camera Stopped & Screenshot Taken")
+            
+            # Send WebSocket alert to all clients
+            for client in connected_clients:
+                try:
+                    asyncio.create_task(client.send_text(json.dumps({"cheating": True, "message": warning_text})))
+                except:
+                    pass
+            
+            stop_camera_flag.set()
+            break
+
+        else:
+            cheating_flag["cheating"] = False
+
+        # Random screenshots
+        if current_time - last_screenshot_time > next_screenshot_interval:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            cv2.imwrite(f"screenshots/screenshot_{timestamp}_random.jpg", frame)
+            last_screenshot_time = current_time
+            next_screenshot_interval = random.randint(5, 10)
+            show_warning = True
+            warning_start_time = current_time
+            warning_text = "📸 Random Screenshot"
+
+        # Warning display
+        if show_warning and (current_time - warning_start_time > WARNING_DURATION):
+            show_warning = False
+            warning_text = ""
+
         if warning_text:
             cv2.rectangle(frame, (0, 0), (frame.shape[1], 50), (0, 0, 0), -1)
-            cv2.putText(frame, warning_text, (10, 35),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 255), 2, cv2.LINE_AA)
+            cv2.putText(frame, warning_text, (10, 35), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 255), 2)
 
+        # Send frame
         ret, buffer = cv2.imencode('.jpg', frame)
-        frame_bytes = buffer.tobytes()
-        yield (b'--frame\r\n'
-               b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+        yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
 
     cap.release()
     stop_camera_flag.clear()
+
+
+# cheating_frame_count = 0
+# device_frame_count = 0
+# required_consecutive_frames = 3  # Kitne frames confirm hone chahiye
+
+# def generate_camera_frames():
+#     global cheating_flag, stop_camera_flag, cheating_frame_count, device_frame_count
+
+#     cap = cv2.VideoCapture(0)
+#     face_mesh_local = mp_face_mesh.FaceMesh(static_image_mode=False, max_num_faces=5, refine_landmarks=True)
+
+#     os.makedirs("screenshots", exist_ok=True)
+#     os.makedirs("logs", exist_ok=True)
+
+#     last_screenshot_time = 0
+#     next_screenshot_interval = random.randint(5, 10)
+#     show_warning = False
+#     warning_start_time = 0
+#     WARNING_DURATION = 3
+#     warning_text = ""
+
+#     ref_enc = load_reference_encoding()
+#     screenshot_taken_at_start = False
+
+#     while not stop_camera_flag.is_set():
+#         ret, frame = cap.read()
+#         if not ret:
+#             break
+
+#         current_time = time.time()
+#         img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+#         results = face_mesh_local.process(img_rgb)
+
+#         # First screenshot at interview start
+#         if not screenshot_taken_at_start:
+#             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+#             filepath = f"screenshots/screenshot_{timestamp}_start.jpg"
+#             cv2.imwrite(filepath, frame)
+#             log_event("Interview Started - Initial Screenshot")
+#             warning_text = "📸 Interview Started – Screenshot Taken!"
+#             show_warning = True
+#             warning_start_time = current_time
+#             screenshot_taken_at_start = True
+
+#         cheating_detected = False
+#         cheating_warning_text = ""
+
+#         num_faces = len(results.multi_face_landmarks) if results.multi_face_landmarks else 0
+
+#         # 1️⃣ Multiple Faces Detection
+#         if num_faces > 1:
+#             cheating_frame_count += 1
+#             if cheating_frame_count >= required_consecutive_frames:
+#                 cheating_detected = True
+#                 cheating_warning_text = "⚠ Multiple persons detected!"
+#         else:
+#             cheating_frame_count = 0  # reset
+
+#         # 2️⃣ Face ID Check
+#         if num_faces == 1 and ref_enc is not None:
+#             small_frame = cv2.resize(frame, (0, 0), fx=0.25, fy=0.25)
+#             rgb_small_frame = cv2.cvtColor(small_frame, cv2.COLOR_BGR2RGB)
+#             face_encs = face_recognition.face_encodings(rgb_small_frame)
+#             if face_encs:
+#                 match = face_recognition.compare_faces([ref_enc], face_encs[0], tolerance=0.5)
+#                 if not match[0]:
+#                     cheating_detected = True
+#                     cheating_warning_text = "⚠ Unauthorized candidate!"
+#             else:
+#                 cheating_warning_text = "⚠ Face encoding not found"
+#         elif num_faces == 0:
+#             cheating_warning_text = "⚠ No face detected!"
+
+#         # 3️⃣ Electronic Device Detection
+#         device_detected = False
+#         if yolo_model:
+#             try:
+#                 yolo_results = yolo_model(frame)
+#                 for r in yolo_results:
+#                     for box in r.boxes:
+#                         cls_id = int(box.cls.cpu())
+#                         conf = float(box.conf.cpu())
+#                         cls_name = yolo_model.names.get(cls_id, "").lower()
+#                         if conf > 0.6 and cls_name in ["cell phone", "cellphone", "phone", "laptop", "tv", "tablet"]:
+#                             device_frame_count += 1
+#                             if device_frame_count >= required_consecutive_frames:
+#                                 device_detected = True
+#                                 cheating_warning_text = f"⚠ Device detected: {cls_name}"
+#                             break
+#                 if not device_detected:
+#                     device_frame_count = 0
+#             except Exception:
+#                 pass
+
+#         # 🔴 If consecutive frames trigger cheating, take screenshot and stop camera
+#         if cheating_detected or device_detected:
+#             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+#             filepath = f"screenshots/screenshot_{timestamp}_cheating.jpg"
+#             cv2.imwrite(filepath, frame)
+#             warning_text = cheating_warning_text
+#             cheating_flag["cheating"] = True
+#             log_event(f"{cheating_warning_text} - Camera Stopped & Screenshot Taken")
+            
+#             # Stop the camera
+#             stop_camera_flag.set()
+#             break  # exit while loop
+#         else:
+#             cheating_flag["cheating"] = False
+
+#         # Random screenshots for monitoring
+#         if current_time - last_screenshot_time > next_screenshot_interval:
+#             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+#             filepath = f"screenshots/screenshot_{timestamp}_random.jpg"
+#             cv2.imwrite(filepath, frame)
+#             last_screenshot_time = current_time
+#             next_screenshot_interval = random.randint(5, 10)
+#             show_warning = True
+#             warning_start_time = current_time
+#             warning_text = "📸 Random Screenshot"
+
+#         # Hide warning after duration
+#         if show_warning and (current_time - warning_start_time > WARNING_DURATION):
+#             show_warning = False
+#             warning_text = ""
+
+#         # Draw face boxes
+#         if results.multi_face_landmarks:
+#             h, w, _ = frame.shape
+#             for face_landmarks in results.multi_face_landmarks:
+#                 xmin, ymin, xmax, ymax = get_face_bounding_rect(face_landmarks, w, h)
+#                 cv2.rectangle(frame, (xmin, ymin), (xmax, ymax), (0, 255, 0), 2)
+
+#         # Draw warning text
+#         if warning_text:
+#             cv2.rectangle(frame, (0, 0), (frame.shape[1], 50), (0, 0, 0), -1)
+#             cv2.putText(frame, warning_text, (10, 35), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 255), 2)
+
+#         # Send frame to browser
+#         ret, buffer = cv2.imencode('.jpg', frame)
+#         yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
+
+#     cap.release()
+#     stop_camera_flag.clear()
+
+
+
+def log_event(message):
+    """Log cheating or alert events to a file"""
+    with open(f"logs/events_{datetime.now().strftime('%Y%m%d')}.txt", "a") as f:
+        f.write(f"[{datetime.now().strftime('%H:%M:%S')}] {message}\n")
+
 
 
 @app.get("/camera_feed")

@@ -1,0 +1,19 @@
+# Ignore PDF exports
+pdf/
+
+# Ignore audio recordings
+audio/
+
+# Ignore video recordings
+video/
+
+# Ignore screenshots
+save_screenshot/
+
+# Ignore OS/system files
+.DS_Store
+Thumbs.db
+
+# Python cache (if any backend Python project)
+__pycache__/
+*.pyc
