@@ -1,0 +1,10 @@
+[14:55:55] 1755163526007 - multiple faces count 1
+[14:55:55] 1755163526007 - multiple faces count 2
+[14:55:55] 1755163526007 - multiple faces count 3
+[14:55:55] Screenshot saved: save_screenshot\1755163526007_20250814_145555.jpg
+[14:56:21] 1755163573057 - multiple faces count 1
+[14:56:21] 1755163573057 - multiple faces count 2
+[14:56:27] 1755163573057 - multiple faces count 1
+[14:56:27] 1755163573057 - multiple faces count 2
+[14:56:27] 1755163573057 - multiple faces count 3
+[14:56:27] Screenshot saved: save_screenshot\1755163573057_20250814_145627.jpg
