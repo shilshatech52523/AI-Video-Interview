@@ -5,7 +5,7 @@ pdf/
 audio/
 
 # Ignore video recordings
-video/
+videos/
 
 # Ignore screenshots
 save_screenshot/

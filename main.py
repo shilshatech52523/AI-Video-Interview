@@ -1,49 +1,41 @@
-
-
-from fastapi import FastAPI, File, UploadFile, Form, Query, Request, Body
+from fastapi import FastAPI, File, UploadFile, Form, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.templating import Jinja2Templates
-import shutil
-import os
-from fastapi import WebSocket, WebSocketDisconnect
+
+import os, shutil, subprocess, json, math, time, random, threading, asyncio, base64
 from datetime import datetime
-import subprocess
-import speech_recognition as sr
-from sqlalchemy import create_engine, Column, Integer, String, DateTime, Float
-from sqlalchemy.orm import declarative_base, sessionmaker
 import datetime as dt
+
+# Audio / STT / ML / CV
+import speech_recognition as sr
 import cv2
-import json
 import mediapipe as mp
-import math
 import numpy as np
 import librosa
-from reportlab.lib.pagesizes import A4
-from reportlab.pdfgen import canvas
-import random
-import time
-import base64
-from pydantic import BaseModel
-from datetime import datetime
 import face_recognition
-# At top of file (global flag)
-import asyncio
-cheating_flag = {"cheating": False}
 from ultralytics import YOLO
-yolo_model = YOLO('yolov8n.pt')
-import threading
 
-stop_camera_flag = threading.Event()
-from fastapi import APIRouter
-# NLP imports
+# DB
+from sqlalchemy import create_engine, Column, Integer, String, DateTime, Float
+from sqlalchemy.orm import declarative_base, sessionmaker
+
+# NLP
 from sentence_transformers import SentenceTransformer, util
 from textblob import TextBlob
 
-app = FastAPI()
+# PDF
+from reportlab.lib.pagesizes import A4
+from reportlab.pdfgen import canvas as pdf_canvas
 
-# CORS
+# TTS
+import pyttsx3
+
+# -------------------------------
+# App & CORS
+# -------------------------------
+app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -51,21 +43,32 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Static and templates
-app.mount("/static", StaticFiles(directory="static"), name="static")
-templates = Jinja2Templates(directory="templates")
-
+# -------------------------------
+# Static / Templates / Folders
+# -------------------------------
+os.makedirs("static", exist_ok=True)
+os.makedirs("templates", exist_ok=True)
 os.makedirs("videos", exist_ok=True)
 os.makedirs("audio", exist_ok=True)
-UPLOAD_FOLDER = "save_screenshot"
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)  # <-- Create this folder here  # <-- Create this folder here
+os.makedirs("pdf", exist_ok=True)
+os.makedirs("screenshots", exist_ok=True)
+os.makedirs("save_screenshot", exist_ok=True)
+os.makedirs("logs", exist_ok=True)
 
+app.mount("/static", StaticFiles(directory="static"), name="static")
+app.mount("/audio", StaticFiles(directory="audio"), name="audio")
+app.mount("/videos", StaticFiles(directory="videos"), name="videos")
+app.mount("/pdfs", StaticFiles(directory="pdf"), name="pdfs")        # optional static serving
+app.mount("/screens", StaticFiles(directory="save_screenshot"), name="screens")
+templates = Jinja2Templates(directory="templates")
 
-# DB setup
-DATABASE_URL = "postgresql+psycopg2://postgres:Sp%40495520@localhost:5432/mydb"
-engine = create_engine(DATABASE_URL)
+# -------------------------------
+# Database (SQLite)
+# -------------------------------
+DATABASE_URL = "sqlite:///./interview.db"
+engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 Base = declarative_base()
-SessionLocal = sessionmaker(bind=engine)
+SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
 
 class Transcript(Base):
     __tablename__ = "transcripts"
@@ -82,19 +85,47 @@ class Transcript(Base):
     sentiment_score = Column(Float, default=0.0)
     response_speed_score = Column(Float, default=0.0)
     final_engagement_score = Column(Float, default=0.0)
-    smile_score = Column(Float, default=0.0)  # New
-    blink_rate_score = Column(Float, default=0.0)  # New
+    smile_score = Column(Float, default=0.0)
+    blink_rate_score = Column(Float, default=0.0)
     created_at = Column(DateTime, default=dt.datetime.utcnow)
 
 Base.metadata.create_all(bind=engine)
 
-# Mediapipe init
+# -------------------------------
+# Models & Globals
+# -------------------------------
+# Mediapipe FaceMesh (analysis)
 mp_face_mesh = mp.solutions.face_mesh
-face_mesh = mp_face_mesh.FaceMesh(static_image_mode=False, max_num_faces=1, refine_landmarks=True)
+face_mesh_analysis = mp_face_mesh.FaceMesh(static_image_mode=False, max_num_faces=1, refine_landmarks=True)
 
-# NLP model
+# Mediapipe FaceMesh (WebSocket up to 5 faces)
+face_mesh_ws = mp_face_mesh.FaceMesh(max_num_faces=5, refine_landmarks=True)
+
+# YOLO for device detection
+yolo_model = YOLO('yolov8n.pt')  # keep file in project root
+
+# NLP
 sbert_model = SentenceTransformer('all-MiniLM-L6-v2')
 
+# Cheating flags / connections
+cheating_flag = {"cheating": False}
+stop_camera_flag = threading.Event()
+connected_clients: list[WebSocket] = []
+
+# Questions
+questions = [
+    "Q1: What is your name?",
+    "Q2: Where do you live?",
+    "Q3: What is your favorite programming language?",
+    "Q4: Tell me about your hobbies.",
+    "Q5: What is your goal for this year?"
+]
+extra_person_count: dict[str, int] = {}
+sessions_state: dict[str, dict] = {}
+
+# -------------------------------
+# Utilities (Analysis pipeline)
+# -------------------------------
 def extract_frames(video_path):
     cap = cv2.VideoCapture(video_path)
     frames = []
@@ -110,7 +141,7 @@ def detect_face_landmarks(frames):
     landmarks_list = []
     for frame in frames:
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        results = face_mesh.process(rgb_frame)
+        results = face_mesh_analysis.process(rgb_frame)
         if results.multi_face_landmarks:
             landmarks_list.append(results.multi_face_landmarks[0])
         else:
@@ -123,16 +154,13 @@ def euclidean_dist(a, b):
 def calculate_eye_aspect_ratio(landmarks, img_width, img_height):
     left_eye_indices = [33, 133, 159, 145, 153, 154]
     right_eye_indices = [362, 263, 386, 374, 380, 381]
-
     def eye_ratio(eye_pts):
         A = euclidean_dist((eye_pts[1].x*img_width, eye_pts[1].y*img_height), (eye_pts[5].x*img_width, eye_pts[5].y*img_height))
         B = euclidean_dist((eye_pts[2].x*img_width, eye_pts[2].y*img_height), (eye_pts[4].x*img_width, eye_pts[4].y*img_height))
         C = euclidean_dist((eye_pts[0].x*img_width, eye_pts[0].y*img_height), (eye_pts[3].x*img_width, eye_pts[3].y*img_height))
         return (A + B) / (2.0 * C)
-
     left_eye = [landmarks.landmark[i] for i in left_eye_indices]
     right_eye = [landmarks.landmark[i] for i in right_eye_indices]
-
     left_ear = eye_ratio(left_eye)
     right_ear = eye_ratio(right_eye)
     return (left_ear + right_ear) / 2.0
@@ -166,8 +194,6 @@ def analyze_posture(landmarks_list):
     return score
 
 def analyze_smile(landmarks_list):
-    # Use simple mouth aspect ratio or lip distance to detect smile intensity
-    # Landmarks: upper lip 13, lower lip 14, mouth corners 61 & 291
     scores = []
     for landmarks in landmarks_list:
         if landmarks:
@@ -178,30 +204,26 @@ def analyze_smile(landmarks_list):
             vertical_dist = abs(upper_lip.y - lower_lip.y)
             horizontal_dist = abs(left_corner.x - right_corner.x)
             if horizontal_dist > 0:
-                mar = vertical_dist / horizontal_dist  # Mouth aspect ratio
-                smile_score = max(0, min(1, 0.3 - mar))  # smaller mar ~ smile (approx)
+                mar = vertical_dist / horizontal_dist
+                smile_score = max(0, min(1, 0.3 - mar))
                 scores.append(smile_score)
     if not scores:
         return 0.0
     return sum(scores) / len(scores)
 
 def calculate_blink_rate(landmarks_list, fps=30):
-    # Count frames where eyes are "closed" based on EAR threshold (<0.2)
     blink_frames = 0
     total_frames = len(landmarks_list)
     EAR_THRESHOLD = 0.2
     for landmarks in landmarks_list:
         if landmarks:
-            # Use calculate_eye_aspect_ratio function
-            img_w, img_h = 640, 480  # assuming approx frame size, or pass dynamically
+            img_w, img_h = 640, 480
             ear = calculate_eye_aspect_ratio(landmarks, img_w, img_h)
             if ear < EAR_THRESHOLD:
                 blink_frames += 1
     blink_rate_per_sec = (blink_frames / total_frames) * fps if total_frames > 0 else 0
-    # Normalize typical blink rate ~15-30 blinks/min → 0.25-0.5 blinks/sec
     normalized_blink = min(max((blink_rate_per_sec - 0.25) / 0.25, 0), 1)
-    # Very low or very high blink rate both might indicate stress; middle is better
-    blink_score = 1 - abs(normalized_blink - 0.5) * 2  # peak at 0.5 normalized blink rate
+    blink_score = 1 - abs(normalized_blink - 0.5) * 2
     return max(0, blink_score)
 
 def analyze_confidence(audio_path):
@@ -212,13 +234,10 @@ def analyze_confidence(audio_path):
         if len(pitch_values) == 0:
             return 0.0
         pitch_std = np.std(pitch_values)
-        # Speech rate estimate: words per second (using silence detection or transcript length / duration)
         duration = librosa.get_duration(y=y, sr=sr)
-        # Note: Transcript length can also be used if available
-        words_per_sec = 0  # default fallback
-        # Confidence heuristic: pitch std + speech rate normalized and combined
+        words_per_sec = 0  # placeholder (not adding extra logic as requested)
         pitch_score = min(pitch_std / 100, 1.0)
-        speech_rate_score = min(words_per_sec / 4, 1.0)  # 4 words/sec typical speaking rate
+        speech_rate_score = min(words_per_sec / 4, 1.0)
         combined_confidence = 0.7 * pitch_score + 0.3 * speech_rate_score
         return combined_confidence
     except Exception as e:
@@ -244,6 +263,9 @@ def intelligent_response_speed_score(response_duration, expected_answer_length, 
     score = max(0, 1 - response_duration / base_time)
     return min(score, 1)
 
+# -------------------------------
+# Upload & PDF
+# -------------------------------
 @app.post("/upload")
 async def upload_video(
     file: UploadFile = File(...),
@@ -252,8 +274,6 @@ async def upload_video(
     expected_answer: str = Form(default=""),
     response_duration: float = Form(default=60.0)
 ):
-    
-    
     filename = datetime.now().strftime("%Y%m%d_%H%M%S") + ".webm"
     video_path = os.path.join("videos", filename)
     with open(video_path, "wb") as buffer:
@@ -270,7 +290,7 @@ async def upload_video(
             "-ar", "16000",
             "-ac", "1",
             audio_path
-        ], check=True)
+        ], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     except subprocess.CalledProcessError as e:
         return {"status": "error", "message": f"FFmpeg audio extract failed: {e}"}
 
@@ -293,12 +313,11 @@ async def upload_video(
     posture_score = analyze_posture(landmarks_list)
     smile_score = analyze_smile(landmarks_list)
     blink_rate_score = calculate_blink_rate(landmarks_list)
-
     confidence_score = analyze_confidence(audio_path)
-
     a_quality_score = answer_quality_score(transcript_text, expected_answer)
     sent_score = normalized_sentiment_score(transcript_text)
     resp_speed_score = intelligent_response_speed_score(response_duration, len(expected_answer.split()))
+
     final_engagement = (
         0.3 * a_quality_score +
         0.2 * sent_score +
@@ -348,50 +367,6 @@ async def upload_video(
         "transcript": transcript_text
     }
 
-
-class ScreenshotData(BaseModel):
-    image_base64: str
-
-@app.post("/save_screenshot")
-async def save_screenshot(file: UploadFile = File(...)):
-    # File ka naam banate hain
-    filename = f"screenshot_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.jpg"
-    file_path = os.path.join(UPLOAD_FOLDER, filename)
-
-    # File save karna
-    with open(file_path, "wb") as buffer:
-        buffer.write(await file.read())
-
-    return {
-        "status": "success",
-        "message": "Screenshot saved locally",
-        "file_path": file_path
-    }
-
-connected_clients = []
-
-@app.websocket("/cheating_status")
-async def websocket_endpoint(ws: WebSocket):
-    await ws.accept()
-    connected_clients.append(ws)
-    try:
-        while True:
-            await asyncio.sleep(1)  # keep connection alive
-    except:
-        pass
-    finally:
-        connected_clients.remove(ws)
-
-# @app.websocket("/cheating_status")
-# async def cheating_status_socket(websocket: WebSocket):
-#     await websocket.accept()
-#     try:
-#         while True:
-#             await websocket.send_json({"cheating": cheating_flag["cheating"]})
-#             await asyncio.sleep(1)
-#     except WebSocketDisconnect:
-#         print("WebSocket client disconnected")
-
 @app.get("/export_pdf")
 async def export_pdf(session_id: str = Query(...)):
     db = SessionLocal()
@@ -401,397 +376,209 @@ async def export_pdf(session_id: str = Query(...)):
     if not rows:
         return {"status": "error", "message": "No data for this session"}
 
-    os.makedirs("pdf", exist_ok=True)
-
-    # PDF file ka path ab pdf/ folder mein
     file_path = os.path.join("pdf", f"interview_{session_id}.pdf")
-    c = canvas.Canvas(file_path, pagesize=A4)
+    c = pdf_canvas.Canvas(file_path, pagesize=A4)
     width, height = A4
     y = height - 50
     c.setFont("Helvetica-Bold", 14)
     c.drawString(50, y, f"Interview Report - Session: {session_id}")
     y -= 30
 
-    c.setFont("Helvetica", 12)
+    c.setFont("Helvetica", 11)
     for i, row in enumerate(rows, start=1):
-        c.drawString(50, y, f"{i}. {row.question}")
-        y -= 18
-        c.drawString(70, y, f"Answer: {row.transcript}")
-        y -= 18
-        c.drawString(70, y, f"Eye Contact Score: {row.eye_contact_score:.2f}")
-        y -= 18
-        c.drawString(70, y, f"Posture Score: {row.posture_score:.2f}")
-        y -= 18
-        c.drawString(70, y, f"Confidence Score: {row.confidence_score:.2f}")
-        y -= 18
-        c.drawString(70, y, f"Answer Quality Score: {row.answer_quality_score:.2f}")
-        y -= 18
-        c.drawString(70, y, f"Sentiment Score: {row.sentiment_score:.2f}")
-        y -= 18
-        c.drawString(70, y, f"Response Speed Score: {row.response_speed_score:.2f}")
-        y -= 18
-        c.drawString(70, y, f"Smile Score: {row.smile_score:.2f}")
-        y -= 18
-        c.drawString(70, y, f"Blink Rate Score: {row.blink_rate_score:.2f}")
-        y -= 18
-        c.drawString(70, y, f"Final Engagement Score: {row.final_engagement_score:.2f}")
-        y -= 30
-
-        if y < 50:
-            c.showPage()
-            y = height - 50
+        lines = [
+            f"{i}. {row.question}",
+            f"Answer: {row.transcript}",
+            f"Eye Contact: {row.eye_contact_score:.2f} | Posture: {row.posture_score:.2f} | Confidence: {row.confidence_score:.2f}",
+            f"Answer Quality: {row.answer_quality_score:.2f} | Sentiment: {row.sentiment_score:.2f} | Speed: {row.response_speed_score:.2f}",
+            f"Smile: {row.smile_score:.2f} | Blink: {row.blink_rate_score:.2f} | Final Engagement: {row.final_engagement_score:.2f}",
+        ]
+        for ln in lines:
+            c.drawString(50, y, ln[:110])
+            y -= 16
+            if y < 60:
+                c.showPage(); y = height - 50; c.setFont("Helvetica", 11)
+        y -= 8
+        if y < 60:
+            c.showPage(); y = height - 50; c.setFont("Helvetica", 11)
 
     c.save()
     return FileResponse(file_path, filename=f"interview_{session_id}.pdf", media_type="application/pdf")
 
+# -------------------------------
+# Home
+# -------------------------------
 @app.get("/", response_class=HTMLResponse)
 async def get_home(request: Request):
     return templates.TemplateResponse("index.html", {"request": request})
 
-
-# --------------------------
-# New live camera feed endpoint with rectangle detection
-# --------------------------
-# Load reference face encoding for authentication
-def load_reference_encoding():
-    try:
-        reference_image = face_recognition.load_image_file("static/reference.jpg")
-        encodings = face_recognition.face_encodings(reference_image)
-        if encodings:
-            return encodings[0]
-    except Exception:
-        pass
-    return None
-# Helper: Get bounding rectangle from landmarks
+# -------------------------------
+# Cheating utilities (screenshots)
+# -------------------------------
 def get_face_bounding_rect(landmarks, img_width, img_height):
-    x_coords = [int(landmark.x * img_width) for landmark in landmarks.landmark]
-    y_coords = [int(landmark.y * img_height) for landmark in landmarks.landmark]
-    xmin, xmax = min(x_coords), max(x_coords)
-    ymin, ymax = min(y_coords), max(y_coords)
-    return xmin, ymin, xmax, ymax
-# Camera feed generator with cheating detection and random screenshots
-# Extra global tracking variables
+    x_coords = [int(l.x * img_width) for l in landmarks.landmark]
+    y_coords = [int(l.y * img_height) for l in landmarks.landmark]
+    return min(x_coords), min(y_coords), max(x_coords), max(y_coords)
 
+def log_event(message):
+    with open(f"logs/events_{datetime.now().strftime('%Y%m%d')}.txt", "a") as f:
+        f.write(f"[{datetime.now().strftime('%H:%M:%S')}] {message}\n")
+
+reference_encoding = None
 cheating_frame_count = 0
 device_frame_count = 0
-required_consecutive_frames = 3  # 3 consecutive frames trigger stop
-reference_encoding = None  # first person's face encoding
+required_consecutive_frames = 3
 
+def save_ws_screenshot(image_np, session_id):
+    filename = f"{session_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
+    filepath = os.path.join("save_screenshot", filename)
+    cv2.imwrite(filepath, image_np)
+    print(f"📸 Screenshot saved: {filepath}")
+
+def run_tts(question_text, session_id):
+    # Use WAV for maximum reliability with pyttsx3
+    filename = f"tts_{session_id}_{int(time.time())}.wav"
+    filepath = os.path.join("audio", filename)
+    engine = pyttsx3.init()
+    engine.save_to_file(question_text, filepath)
+    engine.runAndWait()
+    # Return URL the frontend can fetch
+    return f"/audio/{filename}"
+
+# -------------------------------
+# WebSocket: /ws (JSON protocol)
+# -------------------------------
+@app.websocket("/ws")
+async def websocket_questions(ws: WebSocket):
+    await ws.accept()
+    session_id = str(int(time.time() * 1000))
+    extra_person_count[session_id] = 0
+    sessions_state[session_id] = {"question_index": 0, "active_question": ""}
+
+    try:
+        # Immediately send session_id to client
+        await ws.send_text(json.dumps({"type": "session", "session_id": session_id}))
+
+        while True:
+            msg = await ws.receive_text()
+
+            # Expecting JSON: {"type":"frame","data":"data:image/jpeg;base64,..."} or {"type":"next_question"} or {"type":"stop"}
+            try:
+                data = json.loads(msg)
+            except Exception:
+                # Backward compat: older clients may send "frame:<base64>" or "next_question"
+                if msg.startswith("frame:"):
+                    data = {"type": "frame", "data": msg.split(":", 1)[1]}
+                elif msg == "next_question":
+                    data = {"type": "next_question"}
+                else:
+                    data = {"type": "unknown"}
+            
+            if data.get("type") == "frame":
+                encoded_data_url = data.get("data", "")
+                if "," in encoded_data_url:
+                    encoded = encoded_data_url.split(",", 1)[1]
+                else:
+                    encoded = encoded_data_url
+                img_data = base64.b64decode(encoded)
+                np_arr = np.frombuffer(img_data, np.uint8)
+                frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+
+                results = face_mesh_ws.process(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+                faces = results.multi_face_landmarks or []
+
+                # Multi-face warnings
+                if len(faces) == 0:
+                    await ws.send_text(json.dumps({"type": "warning", "message": "No face detected"}))
+                elif len(faces) > 1:
+                    extra_person_count[session_id] += 1
+                    await ws.send_text(json.dumps({"type": "warning", "message": f"Multiple faces! Count={extra_person_count[session_id]}"}))
+                    if extra_person_count[session_id] >= 3:
+                        save_ws_screenshot(frame, session_id)
+                        await ws.send_text(json.dumps({"type": "stop", "message": "Cheating detected! Session closed."}))
+                        break
+                else:
+                    # reset if single face again
+                    extra_person_count[session_id] = 0
+
+                # Random screenshot
+                if np.random.randint(0, 60) == 1:
+                    save_ws_screenshot(frame, session_id)
+
+                # Device detection (simple — runs occasionally for performance)
+                if np.random.randint(0, 10) == 1:
+                    try:
+                        yolo_results = yolo_model(frame, verbose=False)
+                        device_hit = False
+                        for r in yolo_results:
+                            for box in r.boxes:
+                                cls_id = int(box.cls.cpu())
+                                conf = float(box.conf.cpu())
+                                cls_name = yolo_model.names.get(cls_id, "").lower()
+                                if conf > 0.6 and cls_name in ["cell phone", "cellphone", "phone", "laptop", "tv", "tablet"]:
+                                    device_hit = True
+                                    break
+                            if device_hit:
+                                break
+                        if device_hit:
+                            save_ws_screenshot(frame, session_id)
+                            await ws.send_text(json.dumps({"type": "stop", "message": "Device detected! Session closed."}))
+                            break
+                    except Exception:
+                        pass
+
+            elif data.get("type") == "next_question":
+                idx = sessions_state[session_id]["question_index"]
+                if idx < len(questions):
+                    question = questions[idx]
+                    sessions_state[session_id]["question_index"] += 1
+                    sessions_state[session_id]["active_question"] = question
+                    audio_url = run_tts(question, session_id)
+                    await ws.send_text(json.dumps({
+                        "type": "question",
+                        "text": question,
+                        "audio": audio_url,
+                        "session_id": session_id,
+                        "index": idx
+                    }))
+                else:
+                    await ws.send_text(json.dumps({"type": "stop", "message": "Interview completed"}))
+                    break
+
+            elif data.get("type") == "stop":
+                await ws.send_text(json.dumps({"type": "stop", "message": "Stopped by user"}))
+                break
+
+            else:
+                # ignore unknown
+                pass
+
+    except WebSocketDisconnect:
+        print("Client disconnected from /ws")
+    except Exception as e:
+        print("WebSocket /ws error:", e)
+        try:
+            await ws.send_text(json.dumps({"type": "error", "message": str(e)}))
+        except:
+            pass
+
+# -------------------------------
+# Optional camera MJPEG feed (kept, but unused by new UI)
+# -------------------------------
 def generate_camera_frames():
-    global cheating_flag, stop_camera_flag, cheating_frame_count, device_frame_count, reference_encoding
-
     cap = cv2.VideoCapture(0)
-    face_mesh_local = mp_face_mesh.FaceMesh(static_image_mode=False, max_num_faces=5, refine_landmarks=True)
-
-    os.makedirs("screenshots", exist_ok=True)
-    os.makedirs("logs", exist_ok=True)
-
-    last_screenshot_time = 0
-    next_screenshot_interval = random.randint(5, 10)
-    show_warning = False
-    warning_start_time = 0
-    WARNING_DURATION = 3
-    warning_text = ""
-
-    screenshot_taken_at_start = False
-
     while not stop_camera_flag.is_set():
         ret, frame = cap.read()
         if not ret:
             break
-
-        current_time = time.time()
-        img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        results = face_mesh_local.process(img_rgb)
-
-        num_faces = len(results.multi_face_landmarks) if results.multi_face_landmarks else 0
-
-        # Draw rectangles around all faces
-        if results.multi_face_landmarks:
-            h, w, _ = frame.shape
-            for face_landmarks in results.multi_face_landmarks:
-                xmin, ymin, xmax, ymax = get_face_bounding_rect(face_landmarks, w, h)
-                cv2.rectangle(frame, (xmin, ymin), (xmax, ymax), (0, 255, 0), 2)
-
-        # First screenshot & reference encoding
-        if not screenshot_taken_at_start and num_faces == 1:
-            face_landmarks = results.multi_face_landmarks[0]
-            xmin, ymin, xmax, ymax = get_face_bounding_rect(face_landmarks, w, h)
-            face_img = frame[ymin:ymax, xmin:xmax]
-            face_rgb = cv2.cvtColor(face_img, cv2.COLOR_BGR2RGB)
-            encodings = face_recognition.face_encodings(face_rgb)
-            if encodings:
-                reference_encoding = encodings[0]
-                screenshot_taken_at_start = True
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                cv2.imwrite(f"screenshots/screenshot_{timestamp}_reference.jpg", frame)
-                warning_text = "📸 Reference snapshot taken"
-                show_warning = True
-                warning_start_time = current_time
-
-        cheating_detected = False
-        cheating_warning_text = ""
-        device_detected = False
-
-        # Multiple faces detection
-        if num_faces > 1:
-            cheating_frame_count += 1
-            if cheating_frame_count >= required_consecutive_frames:
-                cheating_detected = True
-                cheating_warning_text = "⚠ Multiple persons detected!"
-        else:
-            cheating_frame_count = 0
-
-        # Face verification
-        if num_faces == 1 and reference_encoding is not None:
-            face_landmarks = results.multi_face_landmarks[0]
-            xmin, ymin, xmax, ymax = get_face_bounding_rect(face_landmarks, w, h)
-            face_img = frame[ymin:ymax, xmin:xmax]
-            face_rgb = cv2.cvtColor(face_img, cv2.COLOR_BGR2RGB)
-            encodings = face_recognition.face_encodings(face_rgb)
-            if encodings:
-                match = face_recognition.compare_faces([reference_encoding], encodings[0], tolerance=0.5)
-                if not match[0]:
-                    cheating_detected = True
-                    cheating_warning_text = "⚠ Person changed! Unauthorized!"
-            else:
-                cheating_warning_text = "⚠ Face encoding not found"
-        elif num_faces == 0:
-            cheating_warning_text = "⚠ No face detected!"
-
-        # Electronic device detection
-        if yolo_model:
-            try:
-                yolo_results = yolo_model(frame)
-                for r in yolo_results:
-                    for box in r.boxes:
-                        cls_id = int(box.cls.cpu())
-                        conf = float(box.conf.cpu())
-                        cls_name = yolo_model.names.get(cls_id, "").lower()
-                        if conf > 0.6 and cls_name in ["cell phone", "cellphone", "phone", "laptop", "tv", "tablet"]:
-                            device_frame_count += 1
-                            if device_frame_count >= required_consecutive_frames:
-                                device_detected = True
-                                cheating_warning_text = f"⚠ Device detected: {cls_name}"
-                            break
-                if not device_detected:
-                    device_frame_count = 0
-            except Exception:
-                pass
-
-        # Cheating triggered
-        # if cheating_detected or device_detected:
-        #     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        #     cv2.imwrite(f"screenshots/screenshot_{timestamp}_cheating.jpg", frame)
-        #     warning_text = cheating_warning_text
-        #     cheating_flag["cheating"] = True
-        #     log_event(f"{cheating_warning_text} - Camera Stopped & Screenshot Taken")
-        #     stop_camera_flag.set()
-        #     break
-        if cheating_detected or device_detected:
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            cv2.imwrite(f"screenshots/screenshot_{timestamp}_cheating.jpg", frame)
-            warning_text = cheating_warning_text
-            cheating_flag["cheating"] = True
-            log_event(f"{cheating_warning_text} - Camera Stopped & Screenshot Taken")
-            
-            # Send WebSocket alert to all clients
-            for client in connected_clients:
-                try:
-                    asyncio.create_task(client.send_text(json.dumps({"cheating": True, "message": warning_text})))
-                except:
-                    pass
-            
-            stop_camera_flag.set()
-            break
-
-        else:
-            cheating_flag["cheating"] = False
-
-        # Random screenshots
-        if current_time - last_screenshot_time > next_screenshot_interval:
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            cv2.imwrite(f"screenshots/screenshot_{timestamp}_random.jpg", frame)
-            last_screenshot_time = current_time
-            next_screenshot_interval = random.randint(5, 10)
-            show_warning = True
-            warning_start_time = current_time
-            warning_text = "📸 Random Screenshot"
-
-        # Warning display
-        if show_warning and (current_time - warning_start_time > WARNING_DURATION):
-            show_warning = False
-            warning_text = ""
-
-        if warning_text:
-            cv2.rectangle(frame, (0, 0), (frame.shape[1], 50), (0, 0, 0), -1)
-            cv2.putText(frame, warning_text, (10, 35), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 255), 2)
-
-        # Send frame
         ret, buffer = cv2.imencode('.jpg', frame)
         yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
-
     cap.release()
     stop_camera_flag.clear()
 
-
-# cheating_frame_count = 0
-# device_frame_count = 0
-# required_consecutive_frames = 3  # Kitne frames confirm hone chahiye
-
-# def generate_camera_frames():
-#     global cheating_flag, stop_camera_flag, cheating_frame_count, device_frame_count
-
-#     cap = cv2.VideoCapture(0)
-#     face_mesh_local = mp_face_mesh.FaceMesh(static_image_mode=False, max_num_faces=5, refine_landmarks=True)
-
-#     os.makedirs("screenshots", exist_ok=True)
-#     os.makedirs("logs", exist_ok=True)
-
-#     last_screenshot_time = 0
-#     next_screenshot_interval = random.randint(5, 10)
-#     show_warning = False
-#     warning_start_time = 0
-#     WARNING_DURATION = 3
-#     warning_text = ""
-
-#     ref_enc = load_reference_encoding()
-#     screenshot_taken_at_start = False
-
-#     while not stop_camera_flag.is_set():
-#         ret, frame = cap.read()
-#         if not ret:
-#             break
-
-#         current_time = time.time()
-#         img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-#         results = face_mesh_local.process(img_rgb)
-
-#         # First screenshot at interview start
-#         if not screenshot_taken_at_start:
-#             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-#             filepath = f"screenshots/screenshot_{timestamp}_start.jpg"
-#             cv2.imwrite(filepath, frame)
-#             log_event("Interview Started - Initial Screenshot")
-#             warning_text = "📸 Interview Started – Screenshot Taken!"
-#             show_warning = True
-#             warning_start_time = current_time
-#             screenshot_taken_at_start = True
-
-#         cheating_detected = False
-#         cheating_warning_text = ""
-
-#         num_faces = len(results.multi_face_landmarks) if results.multi_face_landmarks else 0
-
-#         # 1️⃣ Multiple Faces Detection
-#         if num_faces > 1:
-#             cheating_frame_count += 1
-#             if cheating_frame_count >= required_consecutive_frames:
-#                 cheating_detected = True
-#                 cheating_warning_text = "⚠ Multiple persons detected!"
-#         else:
-#             cheating_frame_count = 0  # reset
-
-#         # 2️⃣ Face ID Check
-#         if num_faces == 1 and ref_enc is not None:
-#             small_frame = cv2.resize(frame, (0, 0), fx=0.25, fy=0.25)
-#             rgb_small_frame = cv2.cvtColor(small_frame, cv2.COLOR_BGR2RGB)
-#             face_encs = face_recognition.face_encodings(rgb_small_frame)
-#             if face_encs:
-#                 match = face_recognition.compare_faces([ref_enc], face_encs[0], tolerance=0.5)
-#                 if not match[0]:
-#                     cheating_detected = True
-#                     cheating_warning_text = "⚠ Unauthorized candidate!"
-#             else:
-#                 cheating_warning_text = "⚠ Face encoding not found"
-#         elif num_faces == 0:
-#             cheating_warning_text = "⚠ No face detected!"
-
-#         # 3️⃣ Electronic Device Detection
-#         device_detected = False
-#         if yolo_model:
-#             try:
-#                 yolo_results = yolo_model(frame)
-#                 for r in yolo_results:
-#                     for box in r.boxes:
-#                         cls_id = int(box.cls.cpu())
-#                         conf = float(box.conf.cpu())
-#                         cls_name = yolo_model.names.get(cls_id, "").lower()
-#                         if conf > 0.6 and cls_name in ["cell phone", "cellphone", "phone", "laptop", "tv", "tablet"]:
-#                             device_frame_count += 1
-#                             if device_frame_count >= required_consecutive_frames:
-#                                 device_detected = True
-#                                 cheating_warning_text = f"⚠ Device detected: {cls_name}"
-#                             break
-#                 if not device_detected:
-#                     device_frame_count = 0
-#             except Exception:
-#                 pass
-
-#         # 🔴 If consecutive frames trigger cheating, take screenshot and stop camera
-#         if cheating_detected or device_detected:
-#             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-#             filepath = f"screenshots/screenshot_{timestamp}_cheating.jpg"
-#             cv2.imwrite(filepath, frame)
-#             warning_text = cheating_warning_text
-#             cheating_flag["cheating"] = True
-#             log_event(f"{cheating_warning_text} - Camera Stopped & Screenshot Taken")
-            
-#             # Stop the camera
-#             stop_camera_flag.set()
-#             break  # exit while loop
-#         else:
-#             cheating_flag["cheating"] = False
-
-#         # Random screenshots for monitoring
-#         if current_time - last_screenshot_time > next_screenshot_interval:
-#             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-#             filepath = f"screenshots/screenshot_{timestamp}_random.jpg"
-#             cv2.imwrite(filepath, frame)
-#             last_screenshot_time = current_time
-#             next_screenshot_interval = random.randint(5, 10)
-#             show_warning = True
-#             warning_start_time = current_time
-#             warning_text = "📸 Random Screenshot"
-
-#         # Hide warning after duration
-#         if show_warning and (current_time - warning_start_time > WARNING_DURATION):
-#             show_warning = False
-#             warning_text = ""
-
-#         # Draw face boxes
-#         if results.multi_face_landmarks:
-#             h, w, _ = frame.shape
-#             for face_landmarks in results.multi_face_landmarks:
-#                 xmin, ymin, xmax, ymax = get_face_bounding_rect(face_landmarks, w, h)
-#                 cv2.rectangle(frame, (xmin, ymin), (xmax, ymax), (0, 255, 0), 2)
-
-#         # Draw warning text
-#         if warning_text:
-#             cv2.rectangle(frame, (0, 0), (frame.shape[1], 50), (0, 0, 0), -1)
-#             cv2.putText(frame, warning_text, (10, 35), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 255), 2)
-
-#         # Send frame to browser
-#         ret, buffer = cv2.imencode('.jpg', frame)
-#         yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
-
-#     cap.release()
-#     stop_camera_flag.clear()
-
-
-
-def log_event(message):
-    """Log cheating or alert events to a file"""
-    with open(f"logs/events_{datetime.now().strftime('%Y%m%d')}.txt", "a") as f:
-        f.write(f"[{datetime.now().strftime('%H:%M:%S')}] {message}\n")
-
-
-
 @app.get("/camera_feed")
 def camera_feed():
-    return StreamingResponse(generate_camera_frames(),
-                             media_type="multipart/x-mixed-replace; boundary=frame")
-
+    return StreamingResponse(generate_camera_frames(), media_type="multipart/x-mixed-replace; boundary=frame")
 
 @app.post("/stop_camera")
 def stop_camera():

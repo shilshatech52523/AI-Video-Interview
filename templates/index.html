@@ -1,419 +1,46 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8" />
-    <title>AI Video Interviewer</title>
-    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600&display=swap" rel="stylesheet" />
-    <style>
-        body {
-            font-family: 'Poppins', sans-serif;
-            background: #f0f4f8;
-            margin: 0;
-            padding: 0;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            min-height: 100vh;
-        }
-
-        h2 {
-            color: #00bcd4;
-            margin-bottom: 20px;
-            font-size: 28px;
-        }
-
-        .horizontal-container {
-            display: flex;
-            align-items: center;
-            gap: 40px;
-            justify-content: center;
-            flex-wrap: wrap;
-        }
-
-        .ai-image {
-            width: 480px;
-            height: 360px;
-            border-radius: 10px;
-            border: 4px solid #00bcd4;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
-            object-fit: cover;
-        }
-
-        .container {
-            position: relative;
-            width: 480px;
-            height: 360px;
-            margin-bottom: 20px;
-        }
-
-        video, canvas {
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 480px;
-            height: 360px;
-            border-radius: 10px;
-            border: 4px solid #00bcd4;
-            object-fit: cover;
-        }
-
-        canvas {
-            z-index: 2;
-            pointer-events: none;
-            border: none;
-        }
-
-        video {
-            z-index: 1;
-            background: #000;
-        }
-
-        button {
-            margin: 15px 10px 0 10px;
-            padding: 12px 20px;
-            font-size: 16px;
-            border: none;
-            border-radius: 8px;
-            cursor: pointer;
-            font-weight: 600;
-            transition: background-color 0.3s ease;
-        }
-
-        #startBtn { background-color: #4caf50; color: white; }
-        #stopBtn { background-color: #f44336; color: white; }
-        #nextQuestionBtn { background-color: #2196f3; color: white; }
-
-        button:disabled { opacity: 0.6; cursor: not-allowed; }
-        button:hover:enabled { filter: brightness(1.1); }
-
-        #warningMsg {
-            position: fixed;
-            top: 20px;
-            left: 50%;
-            transform: translateX(-50%);
-            background-color: #f44336;
-            color: white;
-            padding: 10px 20px;
-            border-radius: 8px;
-            font-weight: 600;
-            opacity: 0;
-            pointer-events: none;
-            z-index: 9999;
-            transition: opacity 0.5s ease;
-        }
-
-        #statusLog {
-            max-height: 150px;
-            overflow-y: auto;
-            margin-top: 15px;
-            font-family: monospace;
-            font-size: 14px;
-            background: #eee;
-            padding: 10px;
-            width: 500px;
-            border-radius: 5px;
-        }
-
-        @media (max-width: 1000px) {
-            .container {
-                width: 90vw;
-                height: auto;
-            }
-            video, canvas {
-                width: 100%;
-                height: auto;
-            }
-            .ai-image {
-                width: 90vw;
-                height: auto;
-            }
-        }
-    </style>
-
-    <!-- Mediapipe JS Libraries -->
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+  <meta charset="UTF-8" />
+  <title>AI Video Interviewer</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600&display=swap" rel="stylesheet" />
 </head>
 <body>
+  <div id="warningMsg"></div>
+  <h2>AI Video Interviewer</h2>
 
-<div id="warningMsg"></div>
-<h2>AI Video Interviewer</h2>
-
-<div class="horizontal-container">
+  <div class="horizontal-container">
     <div class="container">
-        <video id="preview" autoplay muted playsinline></video>
-        <canvas id="overlay"></canvas>
+      <video id="preview" autoplay muted playsinline></video>
+      <canvas id="overlay"></canvas>
     </div>
     <img class="ai-image" src="/static/ai_visual.png" alt="AI Interviewer" />
-</div>
+  </div>
 
-<div>
-    <button id="startBtn">Start Recording</button>
-    <button id="stopBtn" disabled>Stop Recording</button>
+  <div class="controls">
+    <button id="startBtn">Start Interview</button>
     <button id="nextQuestionBtn" disabled>Next Question</button>
-</div>
+    <button id="stopBtn" disabled>Stop</button>
+    <button id="downloadPdfBtn" disabled>Download PDF</button>
+  </div>
 
-<div id="statusLog"></div>
+  <div class="info">
+    <div><strong>Session:</strong> <span id="sessionId">-</span></div>
+    <div><strong>Current Question:</strong> <span id="question">-</span></div>
+  </div>
 
-<script>
-const videoElement = document.getElementById("preview");
-const canvas = document.getElementById("overlay");
-const ctx = canvas.getContext("2d");
+  <div class="panels">
+    <div class="panel">
+      <h3>Live Transcript & Scores</h3>
+      <div id="transcripts"></div>
+    </div>
+    <div class="panel">
+      <h3>Status Log</h3>
+      <div id="statusLog" class="log"></div>
+    </div>
+  </div>
 
-const startBtn = document.getElementById("startBtn");
-const stopBtn = document.getElementById("stopBtn");
-const nextQuestionBtn = document.getElementById("nextQuestionBtn");
-const warningDiv = document.getElementById("warningMsg");
-
-let mediaRecorder;
-let recordedChunks = [];
-let questionIndex = 0;
-let currentQuestion = "";
-let sessionId = "";
-let randomScreenshotTimeout = null;
-let extraPersonCount = 0;
-let cameraReady = false;
-
-// Questions
-const questions = [
-    "Q1: What is your name?",
-    "Q2: Where do you live?",
-    "Q3: What is your favorite programming language?",
-    "Q4: Tell me about your hobbies.",
-    "Q5: What is your goal for this year?"
-];
-
-// WebSocket for cheating detection
-let ws;
-function initWebSocket() {
-    const wsProtocol = location.protocol === "https:" ? "wss" : "ws";
-    ws = new WebSocket(`${wsProtocol}://${location.host}/cheating_status`);
-    ws.onmessage = (event) => {
-        const data = JSON.parse(event.data);
-        if (data.cheating) {
-            stopRecordingAndClose("⚠ Cheating detected! Recording stopped.");
-        }
-    };
-    ws.onclose = () => console.log("WebSocket closed");
-}
-
-// Logs
-function logStatus(message) {
-    const logDiv = document.getElementById("statusLog");
-    const time = new Date().toLocaleTimeString();
-    logDiv.innerHTML += `<div>[${time}] ${message}</div>`;
-}
-
-// Warning messages
-function showWarning(message) {
-    warningDiv.textContent = message;
-    warningDiv.style.opacity = '1';
-    setTimeout(() => {
-        warningDiv.style.transition = "opacity 1s";
-        warningDiv.style.opacity = '0';
-    }, 4000);
-}
-
-// FaceMesh setup
-const faceMesh = new FaceMesh({ locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}` });
-faceMesh.setOptions({ maxNumFaces: 5, refineLandmarks: true, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
-faceMesh.onResults(onResults);
-
-// Draw rectangles
-function drawFaceBoundingBoxes(allLandmarks) {
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    const colors = ['#00FF00', '#FF0000', '#0000FF', '#FFA500', '#FF00FF'];
-
-    allLandmarks.forEach((landmarks, idx) => {
-        const xs = landmarks.map(lm => lm.x * canvas.width);
-        const ys = landmarks.map(lm => lm.y * canvas.height);
-
-        const minX = Math.min(...xs);
-        const maxX = Math.max(...xs);
-        const minY = Math.min(...ys);
-        const maxY = Math.max(...ys);
-
-        ctx.strokeStyle = colors[idx % colors.length];
-        ctx.lineWidth = 3;
-        ctx.beginPath();
-        ctx.rect(minX, minY, maxX - minX, maxY - minY);
-        ctx.stroke();
-    });
-}
-
-// onResults
-function onResults(results) {
-    const faces = results.multiFaceLandmarks || [];
-
-    if(faces.length === 0){
-        showWarning("No face detected. Please show your face clearly.");
-        ctx.clearRect(0,0,canvas.width,canvas.height);
-        return;
-    }
-
-    drawFaceBoundingBoxes(faces);
-
-    if(faces.length > 1){
-        extraPersonCount++;
-        showWarning("Multiple faces detected! Only one person allowed.");
-        logStatus(`Extra face/device detected: ${extraPersonCount}/3`);
-
-        if(extraPersonCount >= 3){
-            stopRecordingAndClose("⚠ 3 detections of extra person/device. Session closed!");
-        }
-    }
-}
-
-// Camera init
-async function initCamera() {
-    const stream = await navigator.mediaDevices.getUserMedia({ video:true, audio:true });
-    videoElement.srcObject = stream;
-    return new Promise((resolve)=>{
-        videoElement.onloadedmetadata = ()=>{
-            cameraReady = true;
-            canvas.width = videoElement.videoWidth;
-            canvas.height = videoElement.videoHeight;
-            const camera = new Camera(videoElement,{
-                onFrame: async ()=> await faceMesh.send({image: videoElement}),
-                width: videoElement.videoWidth,
-                height: videoElement.videoHeight
-            });
-            camera.start();
-            resolve(stream);
-        }
-    });
-}
-
-// TTS
-function speak(text){
-    window.speechSynthesis.cancel(); // Stop previous
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.lang="en-US";
-    utterance.rate=1;
-    utterance.pitch=1;
-    window.speechSynthesis.speak(utterance);
-}
-
-// Screenshots
-function captureScreenshot(){
-    if (!cameraReady) return; // avoid black screenshots
-
-    const offCanvas=document.createElement("canvas");
-    offCanvas.width=videoElement.videoWidth;
-    offCanvas.height=videoElement.videoHeight;
-    const ctx2 = offCanvas.getContext("2d");
-    ctx2.drawImage(videoElement,0,0,offCanvas.width,offCanvas.height);
-
-    offCanvas.toBlob(async (blob)=>{
-        const formData = new FormData();
-        formData.append("file", blob,"screenshot.jpg");
-        await fetch("/save_screenshot",{method:"POST",body:formData});
-        showWarning("📸 Screenshot taken!");
-    },"image/jpeg",0.95);
-
-    scheduleNextScreenshot();
-}
-
-function scheduleNextScreenshot(){
-    const interval = Math.floor(Math.random()*5000)+5000;
-    randomScreenshotTimeout = setTimeout(captureScreenshot,interval);
-}
-
-// Recording
-async function startRecording(questionText){
-    const stream = await initCamera();
-    mediaRecorder = new MediaRecorder(stream);
-    recordedChunks = [];
-
-    mediaRecorder.ondataavailable = (event)=>{
-        if(event.data.size>0) recordedChunks.push(event.data);
-    }
-
-    mediaRecorder.onstop= async ()=>{
-        if(recordedChunks.length>0){
-            const blob = new Blob(recordedChunks,{type:"video/webm"});
-            const formData = new FormData();
-            formData.append("file",blob,"recording.webm");
-            formData.append("question",questionText);
-            formData.append("session_id",sessionId);
-            await fetch("/upload",{method:"POST",body:formData});
-        }
-    }
-
-    mediaRecorder.start();
-    speak(questionText);
-    captureScreenshot();
-}
-
-function stopCurrentRecording(){
-    if(mediaRecorder && mediaRecorder.state!=="inactive") mediaRecorder.stop();
-}
-
-// Stop & close session
-// change
-async function stopRecordingAndClose(message){
-    if(cameraReady){
-        const offCanvas = document.createElement("canvas");
-        offCanvas.width = videoElement.videoWidth;
-        offCanvas.height = videoElement.videoHeight;
-        const ctx2 = offCanvas.getContext("2d");
-        ctx2.drawImage(videoElement, 0, 0, offCanvas.width, offCanvas.height);
-
-        await new Promise((resolve)=>{
-            offCanvas.toBlob(async (blob)=>{
-                const formData = new FormData();
-                formData.append("file", blob,"final_screenshot.jpg");
-                await fetch("/save_screenshot",{method:"POST",body:formData});
-                console.log("Final screenshot taken before closing session.");
-                resolve();
-            }, "image/jpeg", 0.95);
-        });
-    }
-
-    stopCurrentRecording();
-    clearTimeout(randomScreenshotTimeout);
-    nextQuestionBtn.disabled = true;
-    startBtn.disabled = false;
-    stopBtn.disabled = true;
-
-    alert(message);
-    if(ws) ws.close();
-}
-
-// Button handlers
-startBtn.onclick=()=>{
-    initWebSocket();
-    sessionId = crypto.randomUUID();
-    questionIndex=0;
-    extraPersonCount=0;
-
-    startBtn.disabled=true;
-    nextQuestionBtn.disabled=false;
-    stopBtn.disabled=false;
-
-    currentQuestion = questions[questionIndex];
-    startRecording(currentQuestion);
-
-    questionIndex++;
-}
-
-nextQuestionBtn.onclick=()=>{
-    stopCurrentRecording();
-    if(questionIndex<questions.length){
-        currentQuestion = questions[questionIndex];
-        startRecording(currentQuestion);
-        questionIndex++;
-    }else{
-        alert("Interview Completed! Please click Stop.");
-        nextQuestionBtn.disabled=true;
-    }
-}
-
-stopBtn.onclick=async()=>{
-    stopRecordingAndClose("Interview session stopped.");
-}
-</script>
-
+  <script src="/static/script.js"></script>
 </body>
 </html>
