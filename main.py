@@ -546,7 +546,7 @@ async def websocket_questions(ws: WebSocket):
                     break
 
             elif data.get("type") == "stop":
-                await ws.send_text(json.dumps({"type": "stop", "message": "Stopped by user"}))
+                await ws.send_text(json.dumps({"type": "stop", "message": "Session Completed"}))
                 break
 
             else:
