@@ -173,6 +173,7 @@ let currentQuestion = "";
 let sessionId = "";
 let randomScreenshotTimeout = null;
 let extraPersonCount = 0;
+let cameraReady = false;
 
 // Questions
 const questions = [
@@ -186,7 +187,8 @@ const questions = [
 // WebSocket for cheating detection
 let ws;
 function initWebSocket() {
-    ws = new WebSocket("ws://localhost:8000/cheating_status");
+    const wsProtocol = location.protocol === "https:" ? "wss" : "ws";
+    ws = new WebSocket(`${wsProtocol}://${location.host}/cheating_status`);
     ws.onmessage = (event) => {
         const data = JSON.parse(event.data);
         if (data.cheating) {
@@ -269,6 +271,7 @@ async function initCamera() {
     videoElement.srcObject = stream;
     return new Promise((resolve)=>{
         videoElement.onloadedmetadata = ()=>{
+            cameraReady = true;
             canvas.width = videoElement.videoWidth;
             canvas.height = videoElement.videoHeight;
             const camera = new Camera(videoElement,{
@@ -284,6 +287,7 @@ async function initCamera() {
 
 // TTS
 function speak(text){
+    window.speechSynthesis.cancel(); // Stop previous
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.lang="en-US";
     utterance.rate=1;
@@ -293,6 +297,8 @@ function speak(text){
 
 // Screenshots
 function captureScreenshot(){
+    if (!cameraReady) return; // avoid black screenshots
+
     const offCanvas=document.createElement("canvas");
     offCanvas.width=videoElement.videoWidth;
     offCanvas.height=videoElement.videoHeight;
@@ -344,44 +350,35 @@ function stopCurrentRecording(){
     if(mediaRecorder && mediaRecorder.state!=="inactive") mediaRecorder.stop();
 }
 
-// // Stop & close on 3 detections or cheating
-// async function stopRecordingAndClose(message){
-//     stopCurrentRecording();
-//     clearTimeout(randomScreenshotTimeout);
-//     nextQuestionBtn.disabled=true;
-//     startBtn.disabled=false;
-
-//     alert(message);
-
-//     if(ws) ws.close();
-// }
-
+// Stop & close session
 async function stopRecordingAndClose(message){
-    // 1️⃣ Final screenshot before stopping
-    const offCanvas = document.createElement("canvas");
-    offCanvas.width = videoElement.videoWidth;
-    offCanvas.height = videoElement.videoHeight;
-    const ctx2 = offCanvas.getContext("2d");
-    ctx2.drawImage(videoElement, 0, 0, offCanvas.width, offCanvas.height);
+    if(cameraReady){
+        const offCanvas = document.createElement("canvas");
+        offCanvas.width = videoElement.videoWidth;
+        offCanvas.height = videoElement.videoHeight;
+        const ctx2 = offCanvas.getContext("2d");
+        ctx2.drawImage(videoElement, 0, 0, offCanvas.width, offCanvas.height);
 
-    offCanvas.toBlob(async (blob)=>{
-        const formData = new FormData();
-        formData.append("file", blob,"final_screenshot.jpg");
-        await fetch("/save_screenshot",{method:"POST",body:formData});
-        console.log("Final screenshot taken before closing session.");
-    }, "image/jpeg", 0.95);
+        await new Promise((resolve)=>{
+            offCanvas.toBlob(async (blob)=>{
+                const formData = new FormData();
+                formData.append("file", blob,"final_screenshot.jpg");
+                await fetch("/save_screenshot",{method:"POST",body:formData});
+                console.log("Final screenshot taken before closing session.");
+                resolve();
+            }, "image/jpeg", 0.95);
+        });
+    }
 
-    // 2️⃣ Stop recording
     stopCurrentRecording();
     clearTimeout(randomScreenshotTimeout);
     nextQuestionBtn.disabled = true;
     startBtn.disabled = false;
+    stopBtn.disabled = true;
 
-    // 3️⃣ Show alert and close WebSocket
     alert(message);
     if(ws) ws.close();
 }
-
 
 // Button handlers
 startBtn.onclick=()=>{
@@ -413,14 +410,9 @@ nextQuestionBtn.onclick=()=>{
 }
 
 stopBtn.onclick=async()=>{
-    stopCurrentRecording();
-    clearTimeout(randomScreenshotTimeout);
-    nextQuestionBtn.disabled=true;
-    startBtn.disabled=false;
-
-    if(ws) ws.close();
-    alert("Interview session stopped.");
+    stopRecordingAndClose("Interview session stopped.");
 }
 </script>
+
 </body>
 </html>
