@@ -1,14 +1,13 @@
-from fastapi import APIRouter, Query, Form, File, UploadFile
-from fastapi.responses import FileResponse
-from .analysis import extract_frames,  analyze_confidence, analyze_eye_contact, analyze_posture, analyze_smile, answer_quality_score, transcribe_google
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from .analysis import (
+    extract_frames, analyze_confidence, analyze_eye_contact,
+    analyze_posture, analyze_smile, answer_quality_score, transcribe_google
+)
 import numpy as np
-from fastapi import FastAPI, File, UploadFile, Form, Query, Request, WebSocket, WebSocketDisconnect
-import os, shutil, subprocess, json, math, time, random, threading, asyncio, base64
-import cv2
-import mediapipe as mp
+import os, json, time, base64, cv2, mediapipe as mp
 from ultralytics import YOLO
 from .screenshot import get_face_bounding_rect, save_ws_screenshot, run_tts
-from .question import questions
+from .question import get_questions
 
 router = APIRouter()
 
@@ -18,26 +17,24 @@ sessions_state: dict[str, dict] = {}
 yolo_model = YOLO('yolov8n.pt')
 
 mp_face_mesh = mp.solutions.face_mesh
-face_mesh_analysis = mp_face_mesh.FaceMesh(static_image_mode=False, max_num_faces=1, refine_landmarks=True)
-
-# Mediapipe FaceMesh (WebSocket up to 5 faces)
 face_mesh_ws = mp_face_mesh.FaceMesh(max_num_faces=5, refine_landmarks=True)
+
 
 @router.websocket("/ws")
 async def websocket_questions(ws: WebSocket):
     await ws.accept()
     session_id = str(int(time.time() * 1000))
     extra_person_count[session_id] = 0
-    sessions_state[session_id] = {"question_index": 0, "active_question": ""}
+    sessions_state[session_id] = {"question_index": 0, "active_question": "", "correct_answer": ""}
 
     try:
-        # 🔹 Send session_id immediately to client
+        # 🔹 Send session_id immediately
         await ws.send_text(json.dumps({"type": "session", "session_id": session_id}))
 
         while True:
             msg = await ws.receive_text()
 
-            # 🔹 Parse incoming data
+            # Parse incoming JSON
             try:
                 data = json.loads(msg)
             except Exception:
@@ -48,13 +45,10 @@ async def websocket_questions(ws: WebSocket):
                 else:
                     data = {"type": "unknown"}
 
-            # ---------------- FRAME HANDLING ----------------
+            # ---------------- FRAME ----------------
             if data.get("type") == "frame":
                 encoded_data_url = data.get("data", "")
-                if "," in encoded_data_url:
-                    encoded = encoded_data_url.split(",", 1)[1]
-                else:
-                    encoded = encoded_data_url
+                encoded = encoded_data_url.split(",", 1)[1] if "," in encoded_data_url else encoded_data_url
 
                 img_data = base64.b64decode(encoded)
                 np_arr = np.frombuffer(img_data, np.uint8)
@@ -63,11 +57,11 @@ async def websocket_questions(ws: WebSocket):
                 results = face_mesh_ws.process(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
                 faces = results.multi_face_landmarks or []
 
-                if len(faces) == 1:   # ✅ bounding box draw
+                if len(faces) == 1:
                     h, w, _ = frame.shape
                     x1, y1, x2, y2 = get_face_bounding_rect(faces[0], w, h)
                     cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                    extra_person_count[session_id] = 0  # reset if single face
+                    extra_person_count[session_id] = 0
                 elif len(faces) > 1:
                     extra_person_count[session_id] += 1
                     await ws.send_text(json.dumps({
@@ -87,7 +81,7 @@ async def websocket_questions(ws: WebSocket):
                         "message": "No face detected"
                     }))
 
-                # ✅ Send frame back to frontend with box
+                # Send frame with box
                 _, buffer = cv2.imencode('.jpg', frame)
                 encoded_frame = base64.b64encode(buffer).decode("utf-8")
                 await ws.send_text(json.dumps({
@@ -95,11 +89,11 @@ async def websocket_questions(ws: WebSocket):
                     "data": f"data:image/jpeg;base64,{encoded_frame}"
                 }))
 
-                # 🔹 Random screenshot save
+                # Random screenshot
                 if np.random.randint(0, 60) == 1:
                     save_ws_screenshot(frame, session_id)
 
-                # 🔹 Device detection (YOLO)
+                # YOLO device detection
                 if np.random.randint(0, 10) == 1:
                     try:
                         yolo_results = yolo_model(frame, verbose=False)
@@ -124,7 +118,7 @@ async def websocket_questions(ws: WebSocket):
                     except Exception:
                         pass
 
-            # ---------------- AUDIO HANDLING ----------------
+            # ---------------- AUDIO ----------------
             elif data.get("type") == "audio":
                 try:
                     encoded_audio = data.get("data", "")
@@ -133,13 +127,11 @@ async def websocket_questions(ws: WebSocket):
 
                     audio_bytes = base64.b64decode(encoded_audio)
 
-                    # Temp save
                     os.makedirs("audio", exist_ok=True)
                     audio_path = f"audio/ws_{session_id}_{int(time.time())}.wav"
                     with open(audio_path, "wb") as f:
                         f.write(audio_bytes)
 
-                    # ✅ Transcribe
                     transcript = transcribe_google(audio_path)
 
                     await ws.send_text(json.dumps({
@@ -157,24 +149,52 @@ async def websocket_questions(ws: WebSocket):
             # ---------------- NEXT QUESTION ----------------
             elif data.get("type") == "next_question":
                 idx = sessions_state[session_id]["question_index"]
-                if idx < len(questions):
-                    question = questions[idx]
-                    sessions_state[session_id]["question_index"] += 1
-                    sessions_state[session_id]["active_question"] = question
-                    audio_url = run_tts(question, session_id)
-                    await ws.send_text(json.dumps({
-                        "type": "question",
-                        "text": question,
-                        "audio": audio_url,
-                        "session_id": session_id,
-                        "index": idx
-                    }))
-                else:
+
+                if idx >= 10:
                     await ws.send_text(json.dumps({
                         "type": "stop",
                         "message": "Interview completed"
                     }))
                     break
+
+                question, correct_answer = get_questions()
+
+                sessions_state[session_id]["question_index"] += 1
+                sessions_state[session_id]["active_question"] = question
+                sessions_state[session_id]["correct_answer"] = correct_answer
+
+                audio_url = run_tts(question, session_id)
+                await ws.send_text(json.dumps({
+                    "type": "question",
+                    "text": question,
+                    "audio": audio_url,
+                    "session_id": session_id,
+                    "index": idx
+                }))
+
+            # ---------------- ANSWER EVALUATION ----------------
+            elif data.get("type") == "answer":
+                user_answer = data.get("text", "").strip()
+                correct_answer = sessions_state[session_id].get("correct_answer")
+                score = 0.0
+
+                if not correct_answer:
+                    evaluation = "No correct answer available."
+                else:
+                    score = answer_quality_score(user_answer, correct_answer)
+                    if score > 0.75:
+                        evaluation = f"✅ Correct! (Score: {score:.2f})"
+                    elif score > 0.4:
+                        evaluation = f"⚠️ Partially correct. (Score: {score:.2f}) | Expected: {correct_answer}"
+                    else:
+                        evaluation = f"❌ Incorrect. (Score: {score:.2f}) | Your answer: {user_answer} | Correct: {correct_answer}"
+
+                await ws.send_text(json.dumps({
+                    "type": "evaluation",
+                    "message": evaluation,
+                    "score": score,
+                    "session_id": session_id
+                }))
 
             # ---------------- STOP ----------------
             elif data.get("type") == "stop":
@@ -185,7 +205,6 @@ async def websocket_questions(ws: WebSocket):
                 break
 
             else:
-                # ignore unknown
                 pass
 
     except WebSocketDisconnect:

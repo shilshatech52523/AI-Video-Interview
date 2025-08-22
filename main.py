@@ -23,7 +23,7 @@ from utils.ws_socket import router as ws_socket_router
 from utils.database import SessionLocal, Transcript
 from utils.analysis import SentenceTransformer, transcribe_google
 from utils.generate_camera import generate_camera_frames, stop_camera_flag
-from utils.question import questions
+from utils.question import get_questions
 from utils.cheating_detection import start_proctoring
 
 app = FastAPI()
