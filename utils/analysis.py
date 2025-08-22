@@ -1,13 +1,13 @@
 import cv2
+import os
 import numpy as np
 import mediapipe as mp
 import math
 import librosa
 import wave,json
-from vosk import Model, KaldiRecognizer
 from sentence_transformers import SentenceTransformer, util
 from textblob import TextBlob
-
+import speech_recognition as sr
 
 mp_face_mesh = mp.solutions.face_mesh
 face_mesh_analysis = mp_face_mesh.FaceMesh(static_image_mode=False, max_num_faces=1, refine_landmarks=True)
@@ -134,19 +134,19 @@ def analyze_confidence(audio_path):
         print("Confidence analysis error:", e)
         return 0.0
     
-def transcribe_vosk(audio_path):
-    wf = wave.open(audio_path, "rb")
-    model = Model("model")  # pre-downloaded vosk model
-    rec = KaldiRecognizer(model, wf.getframerate())
-    text = ""
-    while True:
-        data = wf.readframes(4000)
-        if len(data) == 0:
-            break
-        if rec.AcceptWaveform(data):
-            res = json.loads(rec.Result())
-            text += res.get("text", "") + " "
-    return text.strip()
+def transcribe_google(audio_path: str) -> str:
+    recognizer = sr.Recognizer()
+    with sr.AudioFile(audio_path) as source:
+        audio = recognizer.record(source)
+
+    try:
+        text = recognizer.recognize_google(audio)   # ✅ Free Google API
+        # text = recognizer.recognize_sphinx(audio)     # Offine Engine
+        return text
+    except sr.UnknownValueError:
+        return "Could not understand audio"
+    except sr.RequestError as e:
+        return f"Google API Error: {e}"
 
 def answer_quality_score(candidate_answer, expected_answer):
     if not candidate_answer or not expected_answer:
