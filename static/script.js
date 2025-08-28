@@ -38,7 +38,6 @@ function toast(msg) {
   setTimeout(() => (warningDiv.style.opacity = 0), 1600);
 }
 
-
 // ===== Fullscreen =====
 function requestFullScreen() {
   let elem = document.documentElement;
@@ -67,17 +66,14 @@ function startTestLock() {
   testRunning = true;
   requestFullScreen();
 
-  // Detect fullscreen exit
   document.addEventListener("fullscreenchange", () => {
     if (testRunning && !document.fullscreenElement) handleViolation("Fullscreen exited");
   });
 
-  // Detect tab switch/minimize
   document.addEventListener("visibilitychange", () => {
     if (testRunning && document.hidden) handleViolation("Tab switch or minimize detected");
   });
 
-  // Detect window blur
   window.addEventListener("blur", () => {
     if (testRunning) handleViolation("Window lost focus");
   });
@@ -109,11 +105,9 @@ function startFrameLoop() {
     canvasEl.width = videoEl.videoWidth;
     canvasEl.height = videoEl.videoHeight;
 
-    // Draw video frame
     ctx.clearRect(0, 0, canvasEl.width, canvasEl.height);
     ctx.drawImage(videoEl, 0, 0, canvasEl.width, canvasEl.height);
 
-    // Send to backend for processing
     const dataUrl = canvasEl.toDataURL("image/jpeg");
     ws.send(JSON.stringify({ type: "frame", data: dataUrl }));
   }, 200);
@@ -197,20 +191,17 @@ startBtn.onclick = async () => {
     let payload = {};
     try { payload = JSON.parse(event.data); } catch { return; }
 
-    // ===== Session =====
     if (payload.type === "session") {
       sessionId = payload.session_id;
       sessionEl.textContent = sessionId;
       pdfBtn.disabled = false;
     }
 
-    // ===== Warnings =====
     else if (payload.type === "warning") {
       toast(payload.message || "Warning");
       log(`Warning: ${payload.message}`);
     }
 
-    // ===== Questions =====
     else if (payload.type === "question") {
       currentQuestion = payload.text || "";
       questionEl.textContent = currentQuestion || "-";
@@ -222,7 +213,6 @@ startBtn.onclick = async () => {
       startRecording();
     }
 
-    // ===== Stop =====
     else if (payload.type === "stop") {
       toast(payload.message || "Stopped");
       log(`Stop: ${payload.message}`);
@@ -233,34 +223,26 @@ startBtn.onclick = async () => {
       endTest();
     }
 
-    // ===== Errors =====
     else if (payload.type === "error") {
       toast("Error: " + payload.message);
       log("Error: " + payload.message);
     }
 
-    // ===== Frame with face box =====
     else if (payload.type === "frame_boxed") {
       const img = new Image();
       img.onload = () => {
         ctx.clearRect(0, 0, canvasEl.width, canvasEl.height);
         ctx.drawImage(img, 0, 0, canvasEl.width, canvasEl.height);
       };
-      img.src = payload.data; // data:image/jpeg;base64,...
+      img.src = payload.data;
     }
   };
 
   ws.onclose = () => { log("WebSocket disconnected"); };
 };
 
-nextBtn.onclick = async () => {
-  await handleQuestionAdvance();
-};
-
-stopBtn.onclick = async () => {
-  endTest();
-};
-
+nextBtn.onclick = async () => { await handleQuestionAdvance(); };
+stopBtn.onclick = async () => { endTest(); };
 pdfBtn.onclick = async () => {
   if (!sessionId) return;
   const url = `/export_pdf?session_id=${encodeURIComponent(sessionId)}`;
@@ -271,3 +253,26 @@ pdfBtn.onclick = async () => {
   a.click();
   a.remove();
 };
+
+
+const dragEl = document.getElementById("draggable");
+
+let isDragging = false;
+let offsetX, offsetY;
+
+dragEl.addEventListener("mousedown", (e) => {
+  isDragging = true;
+  offsetX = e.clientX - dragEl.getBoundingClientRect().left;
+  offsetY = e.clientY - dragEl.getBoundingClientRect().top;
+});
+
+document.addEventListener("mousemove", (e) => {
+  if (isDragging) {
+    dragEl.style.left = e.clientX - offsetX + "px";
+    dragEl.style.top = e.clientY - offsetY + "px";
+  }
+});
+
+document.addEventListener("mouseup", () => {
+  isDragging = false;
+});

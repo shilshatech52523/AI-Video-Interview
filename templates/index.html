@@ -8,39 +8,43 @@
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_detection/face_detection.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
-
 </head>
 <body>
   <div id="warningMsg"></div>
-  <h2>AI Video Interviewer</h2>
+  <h2 class="page-title">AI Video Interviewer</h2>
 
-  <div class="horizontal-container">
-  <div class="container">
-    <video id="preview" autoplay muted playsinline></video>
-    <canvas id="overlay"></canvas>
-  </div>
+  <!-- Call container (main layout like WhatsApp call) -->
+  <div class="call-container">
+    <!-- Main video (interviewee) -->
+    <div class="video-container main-video">
+      <video id="preview" autoplay muted playsinline></video>
+      <canvas id="overlay"></canvas>
+    </div>
 
-  <!-- Pehle yeh tha: <img class="ai-image" src="/static/ai_visual.png" alt="AI Interviewer" /> -->
-
-  <!-- Ab yeh video continuously chalega -->
-<video id="aiVideo" class="hidden" width="400" autoplay muted playsinline loop>
-  <source src="/static/ai_visual.mp4" type="video/mp4" />
-</video>
-
+    <!-- AI Interviewer PiP -->
+   <div class="video-container pip-video" id="draggable">
+  <video id="aiVideo" autoplay muted playsinline loop>
+    <source src="/static/ai_visual.mp4" type="video/mp4" />
+  </video>
 </div>
 
-  <div class="controls">
-    <button id="startBtn">Start Interview</button>
-    <button id="nextQuestionBtn" disabled>Next Question</button>
-    <button id="stopBtn" disabled>Stop</button>
-    <button id="downloadPdfBtn" disabled>Download PDF</button>
+
+    <!-- Controls -->
+    <div class="controls">
+      <button id="startBtn">Start Interview</button>
+      <button id="nextQuestionBtn" disabled>Next Question</button>
+      <button id="stopBtn" disabled>Stop</button>
+      <button id="downloadPdfBtn" disabled>Download PDF</button>
+    </div>
   </div>
 
-  <div class="info">
+  <!-- Info bar -->
+  <div class="info-bar">
     <div><strong>Session:</strong> <span id="sessionId">-</span></div>
     <div><strong>Current Question:</strong> <span id="question">-</span></div>
   </div>
 
+  <!-- Panels -->
   <div class="panels">
     <div class="panel">
       <h3>Live Transcript & Scores</h3>
@@ -53,7 +57,5 @@
   </div>
 
   <script src="/static/script.js"></script>
-
-  
 </body>
 </html>
