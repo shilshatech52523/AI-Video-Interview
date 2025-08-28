@@ -193,7 +193,7 @@ button:active { transform: translateY(1px); }
   position: absolute;   /* allow free movement */
   bottom: 20px;
   right: 20px;
-  width: 200px;
+  width: 160px;
   height: 150px;
   cursor: move;        /* show draggable cursor */
   z-index: 1000;

@@ -268,8 +268,8 @@ dragEl.addEventListener("mousedown", (e) => {
 
 document.addEventListener("mousemove", (e) => {
   if (isDragging) {
-    dragEl.style.left = e.clientX - offsetX + "px";
-    dragEl.style.top = e.clientY - offsetY + "px";
+    dragEl.style.left = e.clientX - offsetX - 290 + "px";
+    dragEl.style.top = e.clientY - offsetY - 100 + "px";
   }
 });
 
