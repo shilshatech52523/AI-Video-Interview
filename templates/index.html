@@ -15,12 +15,19 @@
   <h2>AI Video Interviewer</h2>
 
   <div class="horizontal-container">
-    <div class="container">
-      <video id="preview" autoplay muted playsinline></video>
-      <canvas id="overlay"></canvas>
-    </div>
-    <img class="ai-image" src="/static/ai_visual.png" alt="AI Interviewer" />
+  <div class="container">
+    <video id="preview" autoplay muted playsinline></video>
+    <canvas id="overlay"></canvas>
   </div>
+
+  <!-- Pehle yeh tha: <img class="ai-image" src="/static/ai_visual.png" alt="AI Interviewer" /> -->
+
+  <!-- Ab yeh video continuously chalega -->
+<video id="aiVideo" class="hidden" width="400" autoplay muted playsinline loop>
+  <source src="/static/ai_visual.mp4" type="video/mp4" />
+</video>
+
+</div>
 
   <div class="controls">
     <button id="startBtn">Start Interview</button>
