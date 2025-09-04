@@ -6,8 +6,9 @@ from .analysis import (
 import numpy as np
 import os, json, time, base64, cv2, mediapipe as mp
 from ultralytics import YOLO
-from .screenshot import get_face_bounding_rect, save_ws_screenshot, run_tts
+from .screenshot import get_face_bounding_rect, save_ws_screenshot
 from .question import get_questions
+from .run_tts import run_tts
 
 router = APIRouter()
 

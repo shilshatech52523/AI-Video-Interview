@@ -16,7 +16,7 @@ from textblob import TextBlob
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas as pdf_canvas
 
-from utils.screenshot import get_face_bounding_rect,log_event,device_frame_count,cheating_frame_count,save_ws_screenshot,run_tts,required_consecutive_frames,reference_encoding
+from utils.screenshot import get_face_bounding_rect,log_event,device_frame_count,cheating_frame_count,save_ws_screenshot,required_consecutive_frames,reference_encoding
 from utils.pdf_exporter import router as pdf_exporter
 from utils.upload_router import router as upload_router
 from utils.ws_socket import router as ws_socket_router
@@ -25,6 +25,7 @@ from utils.analysis import SentenceTransformer, transcribe_google
 from utils.generate_camera import generate_camera_frames, stop_camera_flag
 from utils.question import get_questions
 from utils.cheating_detection import start_proctoring
+from utils.run_tts import run_tts
 
 app = FastAPI()
 app.add_middleware(

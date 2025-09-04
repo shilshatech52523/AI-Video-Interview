@@ -3,12 +3,7 @@
 # -------------------------------
 
 from datetime import datetime
-import time
 import os,cv2
-import pyttsx3
-
-
-
 
 def get_face_bounding_rect(landmarks, img_width, img_height):
     x_coords = [int(l.x * img_width) for l in landmarks.landmark]
@@ -30,12 +25,3 @@ def save_ws_screenshot(image_np, session_id):
     cv2.imwrite(filepath, image_np)
     print(f"📸 Screenshot saved: {filepath}")
 
-def run_tts(question_text, session_id):
-    # Use WAV for maximum reliability with pyttsx3
-    filename = f"tts_{session_id}_{int(time.time())}.wav"
-    filepath = os.path.join("audio", filename)
-    engine = pyttsx3.init()
-    engine.save_to_file(question_text, filepath)
-    engine.runAndWait()
-    # Return URL the frontend can fetch
-    return f"/audio/{filename}"
