@@ -1,8 +1,6 @@
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
-from .analysis import (
-    extract_frames, analyze_confidence, analyze_eye_contact,
-    analyze_posture, analyze_smile, answer_quality_score, transcribe_google
-)
+from .transcript import transcribe_google
+from .answer_evaluation import answer_quality_score
 import numpy as np
 import os, json, time, base64, cv2, mediapipe as mp
 from ultralytics import YOLO
@@ -164,7 +162,8 @@ async def websocket_questions(ws: WebSocket):
                 sessions_state[session_id]["active_question"] = question
                 sessions_state[session_id]["correct_answer"] = correct_answer
 
-                audio_url = run_tts(question, session_id)
+                # audio_url = run_tts(question, session_id)
+                audio_url = await run_tts(question, session_id)
                 await ws.send_text(json.dumps({
                     "type": "question",
                     "text": question,

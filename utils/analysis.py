@@ -7,11 +7,10 @@ import librosa
 import wave,json
 from sentence_transformers import SentenceTransformer, util
 from textblob import TextBlob
-import speech_recognition as sr
+
 
 mp_face_mesh = mp.solutions.face_mesh
 face_mesh_analysis = mp_face_mesh.FaceMesh(static_image_mode=False, max_num_faces=1, refine_landmarks=True)
-sbert_model = SentenceTransformer('all-MiniLM-L6-v2')
 def extract_frames(video_path, frame_skip=5):
     cap = cv2.VideoCapture(video_path)
     frames = []
@@ -134,27 +133,7 @@ def analyze_confidence(audio_path):
         print("Confidence analysis error:", e)
         return 0.0
     
-def transcribe_google(audio_path: str) -> str:
-    recognizer = sr.Recognizer()
-    with sr.AudioFile(audio_path) as source:
-        audio = recognizer.record(source)
 
-    try:
-        text = recognizer.recognize_google(audio)   # ✅ Free Google API
-        # text = recognizer.recognize_sphinx(audio)     # Offine Engine
-        return text
-    except sr.UnknownValueError:
-        return "Could not understand audio"
-    except sr.RequestError as e:
-        return f"Google API Error: {e}"
-
-def answer_quality_score(candidate_answer, expected_answer):
-    if not candidate_answer or not expected_answer:
-        return 0.0
-    emb1 = sbert_model.encode(candidate_answer, convert_to_tensor=True)
-    emb2 = sbert_model.encode(expected_answer, convert_to_tensor=True)
-    sim_score = util.pytorch_cos_sim(emb1, emb2).item()
-    return sim_score
 
 def normalized_sentiment_score(text):
     if not text:
