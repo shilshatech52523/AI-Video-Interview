@@ -143,5 +143,7 @@ async def upload_video(
 
     if final_result:
         response["final_score"] = round(final_result.final_score, 2)
+        response["passed"] = final_result.passed  # ✅ Add pass/fail in response
+
 
     return response

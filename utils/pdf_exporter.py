@@ -37,10 +37,13 @@ async def export_pdf(session_id: str = Query(...)):
     c.drawString(50, y, f"Interview Report - Session: {session_id}")
     y -= 25
 
-    # Add final score at top
+    # Add final score and pass/fail status at top
     if final_result:
         c.setFont("Helvetica-Bold", 12)
         c.drawString(50, y, f"Final Score: {final_result.final_score:.2f}")
+        y -= 20
+        pass_status = "Passed ✅" if final_result.passed == "Pass" else "Failed ❌"
+        c.drawString(50, y, f"Status: {pass_status}")
         y -= 25
 
     # Set font for details

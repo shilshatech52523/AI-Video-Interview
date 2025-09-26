@@ -21,6 +21,16 @@ mp_face_mesh = mp.solutions.face_mesh
 face_mesh_ws = mp_face_mesh.FaceMesh(max_num_faces=5, refine_landmarks=True)
 
 
+async def send_final_score(ws, final_result, message):
+    """Helper to send final score + passed status."""
+    await ws.send_text(json.dumps({
+        "type": "stop",
+        "message": message,
+        "final_score": round(final_result.final_score, 2) if final_result else None,
+        "passed": final_result.passed if final_result else None
+    }))
+
+
 @router.websocket("/ws")
 async def websocket_questions(ws: WebSocket):
     await ws.accept()
@@ -29,7 +39,7 @@ async def websocket_questions(ws: WebSocket):
     sessions_state[session_id] = {"question_index": 0, "active_question": "", "correct_answer": ""}
 
     try:
-        # 🔹 Send session_id immediately
+        # Send session_id immediately
         await ws.send_text(json.dumps({"type": "session", "session_id": session_id}))
 
         while True:
@@ -71,30 +81,18 @@ async def websocket_questions(ws: WebSocket):
                     }))
                     if extra_person_count[session_id] >= 3:
                         save_ws_screenshot(frame, session_id)
-                        # Calculate final score before stopping
                         db = SessionLocal()
                         final_result = calculate_and_save_final_score(session_id, db)
                         db.close()
-
-                        await ws.send_text(json.dumps({
-                            "type": "stop",
-                            "message": "Cheating detected! Session closed.",
-                            "final_score": round(final_result.final_score, 2) if final_result else None
-                        }))
+                        await send_final_score(ws, final_result, "Cheating detected! Session closed.")
                         break
                 else:
-                    await ws.send_text(json.dumps({
-                        "type": "warning",
-                        "message": "No face detected"
-                    }))
+                    await ws.send_text(json.dumps({"type": "warning", "message": "No face detected"}))
 
                 # Send frame with box
                 _, buffer = cv2.imencode('.jpg', frame)
                 encoded_frame = base64.b64encode(buffer).decode("utf-8")
-                await ws.send_text(json.dumps({
-                    "type": "frame_boxed",
-                    "data": f"data:image/jpeg;base64,{encoded_frame}"
-                }))
+                await ws.send_text(json.dumps({"type": "frame_boxed", "data": f"data:image/jpeg;base64,{encoded_frame}"}))
 
                 # Random screenshot
                 if np.random.randint(0, 60) == 1:
@@ -120,12 +118,7 @@ async def websocket_questions(ws: WebSocket):
                             db = SessionLocal()
                             final_result = calculate_and_save_final_score(session_id, db)
                             db.close()
-
-                            await ws.send_text(json.dumps({
-                                "type": "stop",
-                                "message": "Device detected! Session closed.",
-                                "final_score": round(final_result.final_score, 2) if final_result else None
-                            }))
+                            await send_final_score(ws, final_result, "Device detected! Session closed.")
                             break
                     except Exception:
                         pass
@@ -138,41 +131,24 @@ async def websocket_questions(ws: WebSocket):
                         encoded_audio = encoded_audio.split(",", 1)[1]
 
                     audio_bytes = base64.b64decode(encoded_audio)
-
                     os.makedirs("audio", exist_ok=True)
                     audio_path = f"audio/ws_{session_id}_{int(time.time())}.wav"
                     with open(audio_path, "wb") as f:
                         f.write(audio_bytes)
 
                     transcript = transcribe_google(audio_path)
-
-                    await ws.send_text(json.dumps({
-                        "type": "transcript",
-                        "text": transcript,
-                        "session_id": session_id
-                    }))
-
+                    await ws.send_text(json.dumps({"type": "transcript", "text": transcript, "session_id": session_id}))
                 except Exception as e:
-                    await ws.send_text(json.dumps({
-                        "type": "error",
-                        "message": f"Transcription failed: {str(e)}"
-                    }))
+                    await ws.send_text(json.dumps({"type": "error", "message": f"Transcription failed: {str(e)}"}))
 
             # ---------------- NEXT QUESTION ----------------
             elif data.get("type") == "next_question":
                 idx = sessions_state[session_id]["question_index"]
-
                 if idx >= 10:
-                    # End of interview: calculate final score
                     db = SessionLocal()
                     final_result = calculate_and_save_final_score(session_id, db)
                     db.close()
-
-                    await ws.send_text(json.dumps({
-                        "type": "stop",
-                        "message": "Interview completed",
-                        "final_score": round(final_result.final_score, 2) if final_result else None
-                    }))
+                    await send_final_score(ws, final_result, "Interview completed")
                     break
 
                 question, correct_answer = get_questions()
@@ -181,20 +157,13 @@ async def websocket_questions(ws: WebSocket):
                 sessions_state[session_id]["correct_answer"] = correct_answer
 
                 audio_url = await run_tts(question, session_id)
-                await ws.send_text(json.dumps({
-                    "type": "question",
-                    "text": question,
-                    "audio": audio_url,
-                    "session_id": session_id,
-                    "index": idx
-                }))
+                await ws.send_text(json.dumps({"type": "question", "text": question, "audio": audio_url, "session_id": session_id, "index": idx}))
 
             # ---------------- ANSWER EVALUATION ----------------
             elif data.get("type") == "answer":
                 user_answer = data.get("text", "").strip()
                 correct_answer = sessions_state[session_id].get("correct_answer")
                 score = 0.0
-
                 if not correct_answer:
                     evaluation = "No correct answer available."
                 else:
@@ -206,25 +175,14 @@ async def websocket_questions(ws: WebSocket):
                     else:
                         evaluation = f"❌ Incorrect. (Score: {score:.2f}) | Your answer: {user_answer} | Correct: {correct_answer}"
 
-                await ws.send_text(json.dumps({
-                    "type": "evaluation",
-                    "message": evaluation,
-                    "score": score,
-                    "session_id": session_id
-                }))
+                await ws.send_text(json.dumps({"type": "evaluation", "message": evaluation, "score": score, "session_id": session_id}))
 
             # ---------------- STOP ----------------
             elif data.get("type") == "stop":
-                # Calculate final score before closing session
                 db = SessionLocal()
                 final_result = calculate_and_save_final_score(session_id, db)
                 db.close()
-
-                await ws.send_text(json.dumps({
-                    "type": "stop",
-                    "message": "Session Completed",
-                    "final_score": round(final_result.final_score, 2) if final_result else None
-                }))
+                await send_final_score(ws, final_result, "Session Completed")
                 break
 
     except WebSocketDisconnect:
