@@ -1,6 +1,9 @@
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from .transcript import transcribe_google
 from .answer_evaluation import answer_quality_score
+from .database import SessionLocal, Transcript, InterviewResult
+from .final_score import calculate_and_save_final_score
+
 import numpy as np
 import os, json, time, base64, cv2, mediapipe as mp
 from ultralytics import YOLO
@@ -14,7 +17,6 @@ extra_person_count: dict[str, int] = {}
 sessions_state: dict[str, dict] = {}
 
 yolo_model = YOLO('yolov8n.pt')
-
 mp_face_mesh = mp.solutions.face_mesh
 face_mesh_ws = mp_face_mesh.FaceMesh(max_num_faces=5, refine_landmarks=True)
 
@@ -69,9 +71,15 @@ async def websocket_questions(ws: WebSocket):
                     }))
                     if extra_person_count[session_id] >= 3:
                         save_ws_screenshot(frame, session_id)
+                        # Calculate final score before stopping
+                        db = SessionLocal()
+                        final_result = calculate_and_save_final_score(session_id, db)
+                        db.close()
+
                         await ws.send_text(json.dumps({
                             "type": "stop",
-                            "message": "Cheating detected! Session closed."
+                            "message": "Cheating detected! Session closed.",
+                            "final_score": round(final_result.final_score, 2) if final_result else None
                         }))
                         break
                 else:
@@ -109,9 +117,14 @@ async def websocket_questions(ws: WebSocket):
                                 break
                         if device_hit:
                             save_ws_screenshot(frame, session_id)
+                            db = SessionLocal()
+                            final_result = calculate_and_save_final_score(session_id, db)
+                            db.close()
+
                             await ws.send_text(json.dumps({
                                 "type": "stop",
-                                "message": "Device detected! Session closed."
+                                "message": "Device detected! Session closed.",
+                                "final_score": round(final_result.final_score, 2) if final_result else None
                             }))
                             break
                     except Exception:
@@ -150,19 +163,23 @@ async def websocket_questions(ws: WebSocket):
                 idx = sessions_state[session_id]["question_index"]
 
                 if idx >= 10:
+                    # End of interview: calculate final score
+                    db = SessionLocal()
+                    final_result = calculate_and_save_final_score(session_id, db)
+                    db.close()
+
                     await ws.send_text(json.dumps({
                         "type": "stop",
-                        "message": "Interview completed"
+                        "message": "Interview completed",
+                        "final_score": round(final_result.final_score, 2) if final_result else None
                     }))
                     break
 
                 question, correct_answer = get_questions()
-
                 sessions_state[session_id]["question_index"] += 1
                 sessions_state[session_id]["active_question"] = question
                 sessions_state[session_id]["correct_answer"] = correct_answer
 
-                # audio_url = run_tts(question, session_id)
                 audio_url = await run_tts(question, session_id)
                 await ws.send_text(json.dumps({
                     "type": "question",
@@ -198,14 +215,17 @@ async def websocket_questions(ws: WebSocket):
 
             # ---------------- STOP ----------------
             elif data.get("type") == "stop":
+                # Calculate final score before closing session
+                db = SessionLocal()
+                final_result = calculate_and_save_final_score(session_id, db)
+                db.close()
+
                 await ws.send_text(json.dumps({
                     "type": "stop",
-                    "message": "Session Completed"
+                    "message": "Session Completed",
+                    "final_score": round(final_result.final_score, 2) if final_result else None
                 }))
                 break
-
-            else:
-                pass
 
     except WebSocketDisconnect:
         print("Client disconnected from /ws")

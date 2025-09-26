@@ -50,5 +50,15 @@ class Transcript(Base):
     blink_rate_score = Column(Float, default=0.0)
     created_at = Column(DateTime, default=dt.datetime.utcnow)
 
+
+# Final interview result model
+class InterviewResult(Base):
+    __tablename__ = "interview_results"
+    id = Column(Integer, primary_key=True, index=True)
+    session_id = Column(String, index=True, nullable=False, unique=True)
+    final_score = Column(Float, default=0.0)
+    created_at = Column(DateTime, default=dt.datetime.utcnow)
+
+
 # Create tables
 Base.metadata.create_all(bind=engine)

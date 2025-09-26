@@ -4,7 +4,6 @@ import shutil
 import subprocess
 from fastapi import APIRouter, Form, File, UploadFile
 from fastapi.responses import FileResponse
-from vosk import Model, KaldiRecognizer
 
 from .analysis import (
     analyze_confidence,
@@ -19,7 +18,8 @@ from .analysis import (
 )
 from .answer_evaluation import answer_quality_score
 from .transcript import transcribe_google
-from .database import SessionLocal, Transcript
+from .database import SessionLocal, Transcript, InterviewResult
+from .final_score import calculate_and_save_final_score
 
 router = APIRouter()
 
@@ -30,53 +30,45 @@ async def upload_video(
     question: str = Form(...),
     session_id: str = Form(...),
     expected_answer: str = Form(default=""),
-    response_duration: float = Form(default=60.0)
+    response_duration: float = Form(default=60.0),
+    is_last_question: bool = Form(False)  # <-- Add this to detect last question
 ):
-    # Create unique filenames
+    # -------------------------------
+    # Save video and extract audio
+    # -------------------------------
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     video_filename = f"{timestamp}.webm"
     video_path = os.path.join("videos", video_filename)
     audio_filename = f"{timestamp}.wav"
     audio_path = os.path.join("audio", audio_filename)
 
-    # Save uploaded video
     with open(video_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
 
-    # Extract audio using ffmpeg
     try:
         subprocess.run(
-            [
-                "ffmpeg",
-                "-y",
-                "-i", video_path,
-                "-vn",
-                "-acodec", "pcm_s16le",
-                "-ar", "16000",
-                "-ac", "1",
-                audio_path
-            ],
-            check=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE
+            ["ffmpeg", "-y", "-i", video_path, "-vn", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1", audio_path],
+            check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE
         )
     except subprocess.CalledProcessError as e:
         return {"status": "error", "message": f"FFmpeg audio extract failed: {e}"}
 
-    # Transcribe audio
+    # -------------------------------
+    # Transcription
+    # -------------------------------
     try:
         transcript_text = transcribe_google(audio_path)
     except Exception as e:
         transcript_text = f"Transcription failed: {e}"
 
-    # Analyze video frames
+    # -------------------------------
+    # Video analysis
+    # -------------------------------
     frames = extract_frames(video_path)
     landmarks_list = detect_face_landmarks(frames)
-
     frame_width = frames[0].shape[1] if frames else 640
     frame_height = frames[0].shape[0] if frames else 480
 
-    # Scores calculations
     eye_contact_score = analyze_eye_contact(landmarks_list, frame_width, frame_height)
     posture_score = analyze_posture(landmarks_list)
     smile_score = analyze_smile(landmarks_list)
@@ -86,7 +78,6 @@ async def upload_video(
     sentiment_score = normalized_sentiment_score(transcript_text)
     response_speed_score = intelligent_response_speed_score(response_duration, len(expected_answer.split()))
 
-    # Final engagement score
     final_engagement = (
         0.3 * answer_quality +
         0.2 * sentiment_score +
@@ -96,9 +87,11 @@ async def upload_video(
         0.05 * smile_score +
         0.05 * blink_rate_score
     )
-    final_engagement = max(0, min(final_engagement, 1))  # Clamp between 0 and 1
+    final_engagement = max(0, min(final_engagement, 1))
 
-    # Save to database
+    # -------------------------------
+    # Save to database (Transcript)
+    # -------------------------------
     db = SessionLocal()
     new_entry = Transcript(
         session_id=session_id,
@@ -119,10 +112,20 @@ async def upload_video(
     db.add(new_entry)
     db.commit()
     db.refresh(new_entry)
+
+    # -------------------------------
+    # Auto calculate final score if last question
+    # -------------------------------
+    final_result = None
+    if is_last_question:
+        final_result = calculate_and_save_final_score(session_id, db)
+
     db.close()
 
+    # -------------------------------
     # Response
-    return {
+    # -------------------------------
+    response = {
         "status": "success",
         "message": "Uploaded and evaluated",
         "id": new_entry.id,
@@ -137,3 +140,8 @@ async def upload_video(
         "final_engagement_score": round(final_engagement, 2),
         "transcript": transcript_text
     }
+
+    if final_result:
+        response["final_score"] = round(final_result.final_score, 2)
+
+    return response
