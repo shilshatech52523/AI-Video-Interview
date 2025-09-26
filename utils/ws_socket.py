@@ -82,7 +82,7 @@ async def websocket_questions(ws: WebSocket):
                     if extra_person_count[session_id] >= 3:
                         save_ws_screenshot(frame, session_id)
                         db = SessionLocal()
-                        final_result = calculate_and_save_final_score(session_id, db)
+                        final_result = calculate_and_save_final_score(session_id, db, stop_reason="Cheating")                        
                         db.close()
                         await send_final_score(ws, final_result, "Cheating detected! Session closed.")
                         break
@@ -116,7 +116,7 @@ async def websocket_questions(ws: WebSocket):
                         if device_hit:
                             save_ws_screenshot(frame, session_id)
                             db = SessionLocal()
-                            final_result = calculate_and_save_final_score(session_id, db)
+                            final_result = calculate_and_save_final_score(session_id, db, stop_reason="Cheating")  # ✅ add stop_reason
                             db.close()
                             await send_final_score(ws, final_result, "Device detected! Session closed.")
                             break
@@ -146,7 +146,7 @@ async def websocket_questions(ws: WebSocket):
                 idx = sessions_state[session_id]["question_index"]
                 if idx >= 10:
                     db = SessionLocal()
-                    final_result = calculate_and_save_final_score(session_id, db)
+                    final_result = calculate_and_save_final_score(session_id, db, stop_reason="Completed")  # ✅ add stop_reason
                     db.close()
                     await send_final_score(ws, final_result, "Interview completed")
                     break
@@ -180,7 +180,7 @@ async def websocket_questions(ws: WebSocket):
             # ---------------- STOP ----------------
             elif data.get("type") == "stop":
                 db = SessionLocal()
-                final_result = calculate_and_save_final_score(session_id, db)
+                final_result = calculate_and_save_final_score(session_id, db, stop_reason="Completed")  # ✅ add stop_reason
                 db.close()
                 await send_final_score(ws, final_result, "Session Completed")
                 break

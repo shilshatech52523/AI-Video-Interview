@@ -1,10 +1,12 @@
 from .database import Transcript, InterviewResult
 
-def calculate_and_save_final_score(session_id: str, db, pass_threshold: float = 60.0):
+def calculate_and_save_final_score(session_id: str, db, pass_threshold: float = 70.0, stop_reason: str = "Completed"):
     """
     Calculates the final weighted score for all transcripts in a session,
     converts it to percentage (0–100), sets pass/fail based on threshold,
     and saves/updates it in InterviewResult table.
+    
+    stop_reason: "Completed" or "Cheating" to indicate why session stopped
     """
 
     # 1️⃣ Fetch all transcripts for the session
@@ -42,12 +44,18 @@ def calculate_and_save_final_score(session_id: str, db, pass_threshold: float = 
     if existing_result:
         existing_result.final_score = final_score
         existing_result.passed = passed
+        existing_result.status = stop_reason  # Add stop reason
         db.commit()
         db.refresh(existing_result)
         return existing_result
 
     # 6️⃣ Create new InterviewResult row
-    result = InterviewResult(session_id=session_id, final_score=final_score, passed=passed)
+    result = InterviewResult(
+        session_id=session_id,
+        final_score=final_score,
+        passed=passed,
+        status=stop_reason  # Add stop reason
+    )
     db.add(result)
     db.commit()
     db.refresh(result)

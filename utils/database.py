@@ -58,6 +58,7 @@ class InterviewResult(Base):
     session_id = Column(String, index=True, nullable=False, unique=True)
     final_score = Column(Float, default=0.0)
     passed = Column(String, default="Fail")  # ✅ Pass/Fail column, default Fail
+    status = Column(String, default="Completed")  # <-- New column
     created_at = Column(DateTime, default=dt.datetime.utcnow)
 
 

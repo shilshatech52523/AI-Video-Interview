@@ -45,6 +45,9 @@ async def export_pdf(session_id: str = Query(...)):
         pass_status = "Passed ✅" if final_result.passed == "Pass" else "Failed ❌"
         c.drawString(50, y, f"Status: {pass_status}")
         y -= 25
+        status_text = f"Session Ended: {final_result.status}"
+        c.drawString(50, y, status_text)
+        y -= 25
 
     # Set font for details
     c.setFont("Helvetica", 11)
